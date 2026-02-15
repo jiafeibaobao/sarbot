@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -119,6 +119,8 @@ class MetricsCache:
     disk_write_bps: float = 0.0
     ticker_24hr: list[dict[str, Any]] | None = None
     ticker_24hr_ts: float = 0.0
+    exchange_symbols: dict[str, dict[str, Any]] = field(default_factory=dict)
+    exchange_symbols_ts: float = 0.0
 
 
 class AppContext:
@@ -214,6 +216,38 @@ async def get_24hr_tickers_cached(max_age_s: float = 10.0) -> list[dict[str, Any
     return tickers
 
 
+async def get_exchange_symbols_cached(max_age_s: float = 300.0) -> dict[str, dict[str, Any]]:
+    """
+    Cache exchangeInfo symbol metadata so we can filter out non-tradable symbols (e.g. SETTLING).
+    """
+    assert ctx is not None
+    now = time.time()
+    async with ctx.cache_lock:
+        if ctx.cache.exchange_symbols and (now - ctx.cache.exchange_symbols_ts) < max_age_s:
+            return ctx.cache.exchange_symbols
+
+    try:
+        info = await asyncio.to_thread(ctx.service.exchange_info)
+        raw = info.get("symbols") or []
+        mp: dict[str, dict[str, Any]] = {}
+        if isinstance(raw, list):
+            for s in raw:
+                if not isinstance(s, dict):
+                    continue
+                sym = str(s.get("symbol", "")).upper()
+                if sym:
+                    mp[sym] = s
+    except Exception as e:
+        log.warning("exchange_info cache refresh failed: %s", e)
+        mp = {}
+
+    async with ctx.cache_lock:
+        if mp:
+            ctx.cache.exchange_symbols = mp
+            ctx.cache.exchange_symbols_ts = now
+        return ctx.cache.exchange_symbols
+
+
 @app.get("/")
 def index():
     p = static_dir / "index.html"
@@ -292,7 +326,10 @@ async def api_update_settings(payload: dict[str, Any]):
     # If primary symbol changed, restart bot to trade that symbol (single-symbol mode).
     if primary_u:
         if ctx.symbols != [primary_u]:
-            await switch_active_symbols([primary_u], primary_symbol=primary_u, cleanup_removed=True, reason="primary_change")
+            try:
+                await switch_active_symbols([primary_u], primary_symbol=primary_u, cleanup_removed=True, reason="primary_change")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
     snap = ctx.settings.snapshot()
     snap["running"] = ctx.runtime.is_running()
@@ -327,6 +364,7 @@ async def api_rankings(
         allowed = set(ctx.settings.symbols())
 
     tickers = await get_24hr_tickers_cached()
+    exch = await get_exchange_symbols_cached()
     items: list[dict[str, Any]] = []
     quote_u = quote.upper()
     for t in tickers:
@@ -335,11 +373,22 @@ async def api_rankings(
             continue
         if allowed is not None and sym not in allowed:
             continue
-        # USD-M futures: pick USDT-margined perpetual contracts by default.
-        if quote_u and not sym.endswith(quote_u):
-            continue
-        if perpetual_only and "_" in sym:
-            continue
+        meta = exch.get(sym)
+        if meta is not None:
+            if meta.get("status") != "TRADING":
+                continue
+            if quote_u and str(meta.get("quoteAsset", "")).upper() != quote_u:
+                continue
+            if perpetual_only and str(meta.get("contractType", "")).upper() != "PERPETUAL":
+                continue
+        else:
+            # If exchangeInfo is available, skip unknown symbols (safety).
+            if exch:
+                continue
+            if quote_u and not sym.endswith(quote_u):
+                continue
+            if perpetual_only and "_" in sym:
+                continue
         pct = _safe_decimal_opt(t.get("priceChangePercent", "0"))
         if pct is None:
             continue
@@ -805,6 +854,29 @@ async def switch_active_symbols(
 
     # Filters + SMA seed + initial positions (blocking REST; run in background threads)
     info = await asyncio.to_thread(ctx.service.exchange_info)
+    sym_meta: dict[str, dict[str, Any]] = {}
+    raw_syms = info.get("symbols") or []
+    if isinstance(raw_syms, list):
+        for s in raw_syms:
+            if not isinstance(s, dict):
+                continue
+            sym = str(s.get("symbol", "")).upper()
+            if sym:
+                sym_meta[sym] = s
+    for sym in ctx.symbols:
+        meta = sym_meta.get(sym)
+        if not meta:
+            raise ValueError(f"Unsupported symbol: {sym}")
+        status = str(meta.get("status", "")).upper()
+        if status != "TRADING":
+            raise ValueError(f"{sym} status={status} not TRADING")
+        # Enforce USD-M perpetual USDT contracts only.
+        ct = str(meta.get("contractType", "")).upper()
+        qa = str(meta.get("quoteAsset", "")).upper()
+        if ct != "PERPETUAL":
+            raise ValueError(f"{sym} contractType={ct} (expected PERPETUAL)")
+        if qa != "USDT":
+            raise ValueError(f"{sym} quoteAsset={qa} (expected USDT)")
     filt_map = parse_filters(info, ctx.symbols)
     for sym in ctx.symbols:
         if sym not in filt_map:
@@ -850,12 +922,20 @@ async def on_startup():
     # Default trading symbol: top gainer (USDT perpetual) from 24h rankings.
     default_sym = ctx.symbols[0]
     try:
+        exch = await get_exchange_symbols_cached(max_age_s=0.0)
         tickers = await get_24hr_tickers_cached(max_age_s=0.0)
         best_sym = None
         best_pct: Decimal | None = None
         for t in tickers:
             sym = str(t.get("symbol", "")).upper()
-            if not sym.endswith("USDT") or "_" in sym:
+            meta = exch.get(sym)
+            if not meta:
+                continue
+            if str(meta.get("status", "")).upper() != "TRADING":
+                continue
+            if str(meta.get("contractType", "")).upper() != "PERPETUAL":
+                continue
+            if str(meta.get("quoteAsset", "")).upper() != "USDT":
                 continue
             pct = _safe_decimal_opt(t.get("priceChangePercent", "0"))
             if pct is None:

@@ -327,7 +327,9 @@ class ExecutionManager(threading.Thread):
             )
         except ClientError as e:
             self._log.error("%s open_initial failed: %s (%s)", symbol, e.error_message, e.error_code)
-            if e.error_code == -1013:
+            # -1013: filter failure (invalid qty/precision)
+            # -4140: symbol not tradable (e.g. SETTLING); stop retrying to avoid spam.
+            if e.error_code in (-1013, -4140):
                 self._state.set_paused(symbol, True)
             return
 

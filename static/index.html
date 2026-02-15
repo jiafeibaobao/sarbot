@@ -432,6 +432,10 @@
         try {
             const resp = await fetch('/api/settings');
             const js = await resp.json();
+            if (!resp.ok) {
+                log(`[CFG] 读取设置失败: ${js.detail || resp.status}`, 'error');
+                return;
+            }
             settingsCache = js;
             if (typeof js.running === 'boolean') setRunning(js.running);
 
@@ -454,6 +458,7 @@
         try {
             const resp = await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);
             const js = await resp.json();
+            if (!resp.ok) throw new Error(js.detail || `HTTP ${resp.status}`);
             items = js.items || [];
         } catch (e) {
             // fallback: use configured symbols without ranking
@@ -526,6 +531,10 @@
                 body: JSON.stringify(payload)
             });
             const js = await resp.json();
+            if (!resp.ok) {
+                log(`[CFG] 应用失败: ${js.detail || resp.status}`, 'error');
+                return;
+            }
             settingsCache = js;
             log(`[CFG] 已应用: ${sym} notional=${notional} lev=${leverage} enabled=${enabled}`, 'success');
             fillSymbolFields(sym);
