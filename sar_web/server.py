@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -174,6 +174,13 @@ def _safe_decimal(val: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
+def _safe_decimal_opt(val: Any) -> Decimal | None:
+    try:
+        return d(val)
+    except Exception:
+        return None
+
+
 async def get_24hr_tickers_cached(max_age_s: float = 10.0) -> list[dict[str, Any]]:
     """
     Cache /fapi/v1/ticker/24hr in-memory to avoid hitting REST on every UI click.
@@ -300,7 +307,7 @@ async def api_rankings(
             continue
         if allowed is not None and sym not in allowed:
             continue
-        pct = _safe_decimal(t.get("priceChangePercent", "0"), default=None)  # type: ignore[arg-type]
+        pct = _safe_decimal_opt(t.get("priceChangePercent", "0"))
         if pct is None:
             continue
         last_price = _safe_decimal(t.get("lastPrice", "0"))
@@ -638,7 +645,11 @@ async def on_startup():
                 best_sym = sym
         if best_sym:
             ctx.settings.set_primary_symbol(best_sym)
-            log.info("Default primary symbol set by rankings: %s (24h=%.2f%%)", best_sym, float(best_pct or 0))
+            log.info(
+                "Default primary symbol set by rankings: %s (24h=%.2f%%)",
+                best_sym,
+                float(best_pct) if best_pct is not None else 0.0,
+            )
     except Exception as e:
         log.warning("Default primary symbol ranking failed: %s", e)
 
