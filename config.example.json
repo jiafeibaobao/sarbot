@@ -1,0 +1,42 @@
+{
+  "rest_base_url": "https://testnet.binancefuture.com",
+  "ws_stream_url": "wss://stream.binancefuture.com",
+
+  "recv_window_ms": 10000,
+  "kline_interval": "1m",
+  "sma_period": 20,
+  "working_type": "MARK_PRICE",
+
+  "watchdog_interval_s": 60,
+  "listen_key_renew_s": 1800,
+
+  "apply_exchange_settings": true,
+  "price_protect": true,
+
+  "always_in": true,
+  "auto_reenter_after_forced_flat": true,
+
+  "client_order_id_prefix": "SAR",
+
+  "trading_enabled": true,
+  "support_hedge_mode": false,
+
+  "order_retry_max_attempts": 5,
+  "order_retry_backoff_s": 0.5,
+
+  "symbols": {
+    "BTCUSDT": {
+      "enabled": true,
+      "notional_usdt": 1000,
+      "leverage": 10,
+      "margin_type": "ISOLATED"
+    },
+    "ETHUSDT": {
+      "enabled": true,
+      "notional_usdt": 1000,
+      "leverage": 10,
+      "margin_type": "ISOLATED"
+    }
+  }
+}
+

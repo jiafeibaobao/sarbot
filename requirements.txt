@@ -1,0 +1,10 @@
+binance-futures-connector==4.1.0
+requests==2.32.5
+websocket-client==1.9.0
+fastapi
+uvicorn
+psutil
+websockets
+
+# dev
+pytest==9.0.2
