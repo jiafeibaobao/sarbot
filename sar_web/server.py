@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import psutil
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -117,6 +117,8 @@ class MetricsCache:
     ram_pct: float = 0.0
     disk_read_bps: float = 0.0
     disk_write_bps: float = 0.0
+    ticker_24hr: list[dict[str, Any]] | None = None
+    ticker_24hr_ts: float = 0.0
 
 
 class AppContext:
@@ -164,6 +166,43 @@ app = FastAPI(title="SAR Dashboard")
 static_dir = Path(__file__).resolve().parent.parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+def _safe_decimal(val: Any, default: Decimal = Decimal("0")) -> Decimal:
+    try:
+        return d(val)
+    except Exception:
+        return default
+
+
+async def get_24hr_tickers_cached(max_age_s: float = 10.0) -> list[dict[str, Any]]:
+    """
+    Cache /fapi/v1/ticker/24hr in-memory to avoid hitting REST on every UI click.
+    """
+    assert ctx is not None
+    now = time.time()
+    async with ctx.cache_lock:
+        if ctx.cache.ticker_24hr is not None and (now - ctx.cache.ticker_24hr_ts) < max_age_s:
+            return ctx.cache.ticker_24hr
+
+    try:
+        res = await asyncio.to_thread(ctx.service.rest.ticker_24hr_price_change)
+        if isinstance(res, dict):
+            tickers = [res]
+        elif isinstance(res, list):
+            tickers = [t for t in res if isinstance(t, dict)]
+        else:
+            tickers = []
+    except (ClientError, ServerError) as e:
+        log.warning("ticker_24hr_price_change failed: %s", e)
+        tickers = []
+    except Exception as e:
+        log.warning("ticker_24hr_price_change failed: %s", e)
+        tickers = []
+
+    async with ctx.cache_lock:
+        ctx.cache.ticker_24hr = tickers
+        ctx.cache.ticker_24hr_ts = now
+    return tickers
 
 
 @app.get("/")
@@ -235,6 +274,47 @@ async def api_update_settings(payload: dict[str, Any]):
     snap["running"] = ctx.runtime.is_running()
     snap["changed"] = changed
     return snap
+
+
+@app.get("/api/rankings")
+async def api_rankings(
+    kind: str = Query("gainers", pattern="^(gainers|losers)$"),
+    limit: int = Query(20, ge=1, le=200),
+    universe: str = Query("configured", pattern="^(configured|all)$"),
+):
+    """
+    Simple rankings for symbol selection:
+    - kind=gainers: sort by 24h priceChangePercent desc
+    - kind=losers:  sort by 24h priceChangePercent asc
+    """
+    assert ctx is not None
+    allowed: set[str] | None = None
+    if universe == "configured":
+        allowed = set(ctx.settings.symbols())
+
+    tickers = await get_24hr_tickers_cached()
+    items: list[dict[str, Any]] = []
+    for t in tickers:
+        sym = str(t.get("symbol", "")).upper()
+        if not sym:
+            continue
+        if allowed is not None and sym not in allowed:
+            continue
+        pct = _safe_decimal(t.get("priceChangePercent", "0"), default=None)  # type: ignore[arg-type]
+        if pct is None:
+            continue
+        last_price = _safe_decimal(t.get("lastPrice", "0"))
+        items.append(
+            {
+                "symbol": sym,
+                "change_pct": float(pct),
+                "last_price": float(last_price),
+            }
+        )
+
+    items.sort(key=lambda x: x["change_pct"], reverse=(kind == "gainers"))
+    items = items[: int(limit)]
+    return {"kind": kind, "limit": int(limit), "universe": universe, "items": items}
 
 
 @app.get("/api/status")
@@ -541,6 +621,26 @@ async def on_startup():
 
     ctx = AppContext(cfg)
     assert ctx is not None
+
+    # Default UI/trading symbol: top gainer in configured universe.
+    try:
+        tickers = await get_24hr_tickers_cached(max_age_s=0.0)
+        allowed = set(ctx.settings.symbols())
+        best_sym = None
+        best_pct: Decimal | None = None
+        for t in tickers:
+            sym = str(t.get("symbol", "")).upper()
+            if sym not in allowed:
+                continue
+            pct = _safe_decimal(t.get("priceChangePercent", "0"))
+            if best_pct is None or pct > best_pct:
+                best_pct = pct
+                best_sym = sym
+        if best_sym:
+            ctx.settings.set_primary_symbol(best_sym)
+            log.info("Default primary symbol set by rankings: %s (24h=%.2f%%)", best_sym, float(best_pct or 0))
+    except Exception as e:
+        log.warning("Default primary symbol ranking failed: %s", e)
 
     # Exchange filters + SMA seeding + initial positions
     info = ctx.service.exchange_info()

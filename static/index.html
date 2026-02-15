@@ -275,12 +275,15 @@
             <div class="stat-card mb-3">
                 <div class="card-label">交易参数 (Settings) <i class="fas fa-sliders"></i></div>
                 <div class="mb-2">
-                    <label class="form-label small text-secondary mb-1">展示币种</label>
-                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-primary"></select>
+                    <label class="form-label small text-secondary mb-1">选币榜单</label>
+                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-rank-mode">
+                        <option value="gainers" selected>涨幅榜</option>
+                        <option value="losers">跌幅榜</option>
+                    </select>
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small text-secondary mb-1">配置币种</label>
-                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-symbol"></select>
+                    <label class="form-label small text-secondary mb-1">交易币种（默认: 涨幅榜第1名）</label>
+                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-primary"></select>
                 </div>
                 <div class="row g-2">
                     <div class="col-6">
@@ -300,7 +303,7 @@
                     <button class="btn btn-sm btn-primary" onclick="applySettings()">应用</button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="reloadSettings()">刷新</button>
                 </div>
-                <div class="small text-secondary mt-2" id="cfg-hint">修改会影响后续下单（已持仓不强制重算仓位）。</div>
+                <div class="small text-secondary mt-2" id="cfg-hint">应用会更新该币种参数，并将驾驶舱展示切换到该币种。</div>
             </div>
 
             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -432,52 +435,72 @@
             settingsCache = js;
             if (typeof js.running === 'boolean') setRunning(js.running);
 
-            const prim = document.getElementById('cfg-primary');
-            const symSel = document.getElementById('cfg-symbol');
-
-            const symbols = Object.keys((js.symbols || {}));
-            ensureOptions(prim, symbols, js.primary_symbol);
-            ensureOptions(symSel, symbols, symbols[0]);
-
-            // default primary
-            if (js.primary_symbol) prim.value = js.primary_symbol;
-
-            // fill fields for selected symbol
-            fillSymbolFields(symSel.value);
-
-            symSel.onchange = () => fillSymbolFields(symSel.value);
+            const modeEl = document.getElementById('cfg-rank-mode');
+            if (modeEl) {
+                modeEl.onchange = () => reloadRankings(true);
+            }
+            await reloadRankings(false);
         } catch (e) {
             log('[CFG] 读取设置失败', 'error');
         }
     }
 
-    function ensureOptions(selectEl, opts, selected) {
-        const existing = Array.from(selectEl.options).map(o => o.value);
-        const same = existing.length === opts.length && existing.every((v,i)=>v===opts[i]);
-        if (!same) {
-            selectEl.innerHTML = '';
-            for (const o of opts) {
-                const el = document.createElement('option');
-                el.value = o;
-                el.textContent = o;
-                selectEl.appendChild(el);
-            }
+    async function reloadRankings(forceSelectFirst) {
+        const prim = document.getElementById('cfg-primary');
+        const modeEl = document.getElementById('cfg-rank-mode');
+        const kind = (modeEl && modeEl.value) ? modeEl.value : 'gainers';
+
+        let items = [];
+        try {
+            const resp = await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=50&universe=configured`);
+            const js = await resp.json();
+            items = js.items || [];
+        } catch (e) {
+            // fallback: use configured symbols without ranking
+            const symbols = Object.keys((settingsCache && settingsCache.symbols) || {});
+            items = symbols.map(s => ({ symbol: s, change_pct: 0 }));
         }
-        if (selected && opts.includes(selected)) selectEl.value = selected;
+
+        prim.innerHTML = '';
+        for (const it of items) {
+            const sym = it.symbol;
+            const pct = Number(it.change_pct);
+            const pctTxt = isFinite(pct) ? ((pct >= 0 ? '+' : '') + pct.toFixed(2) + '%') : '--';
+            const opt = document.createElement('option');
+            opt.value = sym;
+            opt.textContent = `${sym} (${pctTxt})`;
+            prim.appendChild(opt);
+        }
+
+        let selected = null;
+        if (!forceSelectFirst && settingsCache && settingsCache.primary_symbol) {
+            const p = settingsCache.primary_symbol;
+            if (items.some(x => x.symbol === p)) selected = p;
+        }
+        if (!selected && items.length > 0) selected = items[0].symbol;
+        if (selected) prim.value = selected;
+
+        prim.onchange = () => fillSymbolFields(prim.value);
+        fillSymbolFields(prim.value);
     }
 
     function fillSymbolFields(symbol) {
         if (!settingsCache || !settingsCache.symbols) return;
         const s = settingsCache.symbols[symbol];
-        if (!s) return;
+        if (!s) {
+            document.getElementById('cfg-enabled').checked = false;
+            document.getElementById('cfg-notional').value = '';
+            document.getElementById('cfg-leverage').value = '';
+            return;
+        }
         document.getElementById('cfg-enabled').checked = !!s.enabled;
         document.getElementById('cfg-notional').value = (s.notional_usdt != null) ? s.notional_usdt : '';
         document.getElementById('cfg-leverage').value = (s.leverage != null) ? s.leverage : '';
     }
 
     async function applySettings() {
-        const primary = document.getElementById('cfg-primary').value;
-        const sym = document.getElementById('cfg-symbol').value;
+        const sym = document.getElementById('cfg-primary').value;
+        const primary = sym;
         const enabled = document.getElementById('cfg-enabled').checked;
         const notional = Number(document.getElementById('cfg-notional').value);
         const leverage = Number(document.getElementById('cfg-leverage').value);
