@@ -17,15 +17,44 @@ class SettingsStore:
     - Changes affect future orders immediately via ExecutionManager's symbol_cfg_provider.
     """
 
-    def __init__(self, *, symbols: list[str], initial: dict[str, SymbolConfig], primary_symbol: str):
+    def __init__(
+        self,
+        *,
+        symbols: list[str],
+        initial: dict[str, SymbolConfig],
+        primary_symbol: str,
+        default_template: SymbolConfig,
+    ):
         self._lock = threading.Lock()
         self._symbols = symbols[:]  # stable ordering
-        self._cfg: dict[str, SymbolConfig] = {s: initial[s] for s in symbols}
+        self._cfg: dict[str, SymbolConfig] = {s: initial[s] for s in symbols if s in initial}
         self._primary = primary_symbol
+        self._default = default_template
 
     def symbols(self) -> list[str]:
         with self._lock:
             return self._symbols[:]
+
+    def default_template(self) -> SymbolConfig:
+        with self._lock:
+            return self._default
+
+    def ensure_symbol(self, symbol: str) -> SymbolConfig:
+        sym = symbol.upper()
+        with self._lock:
+            if sym in self._cfg:
+                return self._cfg[sym]
+            tmpl = self._default
+            cfg = SymbolConfig(
+                enabled=True,
+                notional_usdt=tmpl.notional_usdt,
+                leverage=tmpl.leverage,
+                margin_type=tmpl.margin_type,
+            )
+            self._cfg[sym] = cfg
+            if sym not in self._symbols:
+                self._symbols.append(sym)
+            return cfg
 
     def get_primary_symbol(self) -> str:
         with self._lock:
@@ -54,6 +83,16 @@ class SettingsStore:
     ) -> SymbolConfig:
         sym = symbol.upper()
         with self._lock:
+            if sym not in self._cfg:
+                tmpl = self._default
+                self._cfg[sym] = SymbolConfig(
+                    enabled=True,
+                    notional_usdt=tmpl.notional_usdt,
+                    leverage=tmpl.leverage,
+                    margin_type=tmpl.margin_type,
+                )
+                if sym not in self._symbols:
+                    self._symbols.append(sym)
             cur = self._cfg[sym]
             en = cur.enabled if enabled is None else bool(enabled)
             notional = cur.notional_usdt if notional_usdt is None else d(notional_usdt)

@@ -17,13 +17,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from sar_bot.binance_service import BinanceService, ClientError, ServerError
-from sar_bot.config import Config
+from sar_bot.config import Config, SymbolConfig
 from sar_bot.execution_manager import ExecutionManager
 from sar_bot.models import ExecutionTask, SymbolFilters
 from sar_bot.runtime_control import RuntimeControl
 from sar_bot.state import StateStore
 from sar_bot.strategy_engine import StrategyEngine
-from sar_bot.utils import d, parse_bool
+from sar_bot.utils import d, floor_to_step, parse_bool, to_str
 from sar_bot.watchdog import Watchdog
 from sar_bot.ws_supervisor import UserDataProcessor, WsSupervisor
 from sar_web.pnl_manager import PnLManager
@@ -127,10 +127,12 @@ class AppContext:
         self.symbols = [s for s, sc in cfg.symbols.items() if sc.enabled]
         if not self.symbols:
             raise RuntimeError("No enabled symbols in config.json")
+        default_template = next(iter(cfg.symbols.values()))
         self.settings = SettingsStore(
             symbols=self.symbols,
             initial=cfg.symbols,
             primary_symbol=self.symbols[0],
+            default_template=default_template,
         )
 
         self.shutdown_thread = asyncio.Event()
@@ -237,6 +239,14 @@ async def api_get_settings():
     assert ctx is not None
     snap = ctx.settings.snapshot()
     snap["running"] = ctx.runtime.is_running()
+    snap["active_symbols"] = ctx.symbols
+    tmpl = ctx.settings.default_template()
+    snap["defaults"] = {
+        "enabled": True,
+        "notional_usdt": float(tmpl.notional_usdt),
+        "leverage": int(tmpl.leverage),
+        "margin_type": tmpl.margin_type,
+    }
     return snap
 
 
@@ -246,8 +256,11 @@ async def api_update_settings(payload: dict[str, Any]):
     changed: list[str] = []
 
     primary = payload.get("primary_symbol")
+    primary_u: str | None = None
     if primary:
-        ctx.settings.set_primary_symbol(str(primary))
+        primary_u = str(primary).upper()
+        ctx.settings.ensure_symbol(primary_u)
+        ctx.settings.set_primary_symbol(primary_u)
 
     symbols = payload.get("symbols") or {}
     if isinstance(symbols, dict):
@@ -255,10 +268,8 @@ async def api_update_settings(payload: dict[str, Any]):
             if not isinstance(sdata, dict):
                 continue
             sym_u = str(sym).upper()
-            try:
-                before = ctx.settings.get_symbol_config(sym_u)
-            except Exception:
-                continue
+            ctx.settings.ensure_symbol(sym_u)
+            before = ctx.settings.get_symbol_config(sym_u)
             after = ctx.settings.update_symbol(
                 sym_u,
                 enabled=sdata.get("enabled"),
@@ -268,17 +279,31 @@ async def api_update_settings(payload: dict[str, Any]):
             if before != after:
                 changed.append(sym_u)
                 # Apply leverage settings and refresh stop/entry logic.
-                try:
-                    ctx.exec_q.put_nowait(ExecutionTask("INIT_SYMBOL", sym_u, {}))
-                except Exception:
-                    pass
-                try:
-                    ctx.exec_q.put_nowait(ExecutionTask("UPDATE_STOP", sym_u, {"reason": "settings_update"}))
-                except Exception:
-                    pass
+                if ctx.exec_q is not None and sym_u in set(ctx.symbols):
+                    try:
+                        ctx.exec_q.put_nowait(ExecutionTask("INIT_SYMBOL", sym_u, {}))
+                    except Exception:
+                        pass
+                    try:
+                        ctx.exec_q.put_nowait(ExecutionTask("UPDATE_STOP", sym_u, {"reason": "settings_update"}))
+                    except Exception:
+                        pass
+
+    # If primary symbol changed, restart bot to trade that symbol (single-symbol mode).
+    if primary_u:
+        if ctx.symbols != [primary_u]:
+            await switch_active_symbols([primary_u], primary_symbol=primary_u, cleanup_removed=True, reason="primary_change")
 
     snap = ctx.settings.snapshot()
     snap["running"] = ctx.runtime.is_running()
+    snap["active_symbols"] = ctx.symbols
+    tmpl = ctx.settings.default_template()
+    snap["defaults"] = {
+        "enabled": True,
+        "notional_usdt": float(tmpl.notional_usdt),
+        "leverage": int(tmpl.leverage),
+        "margin_type": tmpl.margin_type,
+    }
     snap["changed"] = changed
     return snap
 
@@ -287,7 +312,9 @@ async def api_update_settings(payload: dict[str, Any]):
 async def api_rankings(
     kind: str = Query("gainers", pattern="^(gainers|losers)$"),
     limit: int = Query(20, ge=1, le=200),
-    universe: str = Query("configured", pattern="^(configured|all)$"),
+    universe: str = Query("all", pattern="^(configured|all)$"),
+    quote: str = Query("USDT", pattern="^(USDT)$"),
+    perpetual_only: bool = Query(True),
 ):
     """
     Simple rankings for symbol selection:
@@ -301,11 +328,17 @@ async def api_rankings(
 
     tickers = await get_24hr_tickers_cached()
     items: list[dict[str, Any]] = []
+    quote_u = quote.upper()
     for t in tickers:
         sym = str(t.get("symbol", "")).upper()
         if not sym:
             continue
         if allowed is not None and sym not in allowed:
+            continue
+        # USD-M futures: pick USDT-margined perpetual contracts by default.
+        if quote_u and not sym.endswith(quote_u):
+            continue
+        if perpetual_only and "_" in sym:
             continue
         pct = _safe_decimal_opt(t.get("priceChangePercent", "0"))
         if pct is None:
@@ -346,6 +379,11 @@ async def ws_endpoint(websocket: WebSocket):
 async def build_dashboard_payload() -> dict[str, Any]:
     assert ctx is not None
     sym = ctx.settings.get_primary_symbol()
+    # During symbol switch we may briefly have a primary symbol not yet present in the state store.
+    if not ctx.symbols:
+        raise RuntimeError("No active symbols")
+    if sym not in set(ctx.symbols):
+        sym = ctx.symbols[0]
     now = datetime.now(timezone.utc)
 
     with ctx.state.lock:
@@ -560,7 +598,7 @@ def start_bot_threads(
     state: StateStore,
     *,
     symbol_cfg_provider,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, list[Any]]:
     import queue
     import threading
 
@@ -599,7 +637,8 @@ def start_bot_threads(
         shutdown=shutdown,
     )
 
-    for t in (exec_mgr, strat, user_proc, watchdog, ws):
+    threads = [exec_mgr, strat, user_proc, watchdog, ws]
+    for t in threads:
         t.start()
 
     # Initial tasks
@@ -609,7 +648,186 @@ def start_bot_threads(
         exec_q.put(ExecutionTask("CANCEL_STALE_ORDERS", sym, {}))
         exec_q.put(ExecutionTask("UPDATE_STOP", sym, {"reason": "startup"}))
 
-    return shutdown, exec_q
+    return shutdown, exec_q, threads
+
+
+def clone_cfg_with_symbols(cfg: Config, symbols: dict[str, SymbolConfig]) -> Config:
+    # Config is frozen; create a new instance to run bot threads on a different symbol set.
+    return Config(
+        api_key=cfg.api_key,
+        api_secret=cfg.api_secret,
+        rest_base_url=cfg.rest_base_url,
+        ws_stream_url=cfg.ws_stream_url,
+        recv_window_ms=cfg.recv_window_ms,
+        kline_interval=cfg.kline_interval,
+        sma_period=cfg.sma_period,
+        working_type=cfg.working_type,
+        watchdog_interval_s=cfg.watchdog_interval_s,
+        listen_key_renew_s=cfg.listen_key_renew_s,
+        apply_exchange_settings=cfg.apply_exchange_settings,
+        price_protect=cfg.price_protect,
+        always_in=cfg.always_in,
+        auto_reenter_after_forced_flat=cfg.auto_reenter_after_forced_flat,
+        client_order_id_prefix=cfg.client_order_id_prefix,
+        trading_enabled=cfg.trading_enabled,
+        support_hedge_mode=cfg.support_hedge_mode,
+        order_retry_max_attempts=cfg.order_retry_max_attempts,
+        order_retry_backoff_s=cfg.order_retry_backoff_s,
+        symbols=symbols,
+        log_level=cfg.log_level,
+    )
+
+
+def _cleanup_symbol_sync(symbol: str, *, state: StateStore, client_order_id_prefix: str) -> None:
+    """
+    Best-effort cleanup to avoid leaving unmanaged exposure when switching symbols:
+    - cancel SAR orders on the symbol
+    - close any existing one-way position with reduceOnly MARKET
+    """
+    assert ctx is not None
+    sym = symbol.upper()
+    prefix = f"{client_order_id_prefix}-{sym}-"
+
+    # 1) Cancel our open orders (STOP / etc.)
+    try:
+        orders = ctx.service.get_open_orders(sym)
+    except Exception:
+        orders = []
+    for o in orders:
+        try:
+            cid = str(o.get("clientOrderId", ""))
+            if not cid.startswith(prefix):
+                continue
+            oid = int(o.get("orderId"))
+            ctx.service.cancel_order(symbol=sym, order_id=oid)
+        except Exception:
+            continue
+
+    # 2) Close any existing position
+    try:
+        risks = ctx.service.get_position_risk(symbol=sym)
+        pos_amt = d(risks[0].get("positionAmt", "0")) if risks else Decimal("0")
+    except Exception:
+        pos_amt = Decimal("0")
+    if pos_amt == Decimal("0"):
+        return
+
+    with state.lock:
+        st = state.get(sym)
+        filters = st.filters
+    if filters is None:
+        try:
+            info = ctx.service.exchange_info()
+            fm = parse_filters(info, [sym])
+            filters = fm.get(sym)
+        except Exception:
+            filters = None
+    if filters is None:
+        return
+
+    qty = floor_to_step(abs(pos_amt), filters.step_size)
+    if qty < filters.min_qty:
+        return
+    side = "SELL" if pos_amt > 0 else "BUY"
+    ts = int(time.time() * 1000) % 1_000_000_000
+    cid = f"{client_order_id_prefix}-{sym}-FLAT-{ts}"[:36]
+    try:
+        ctx.service.new_order(
+            symbol=sym,
+            side=side,
+            order_type="MARKET",
+            quantity=to_str(qty),
+            reduceOnly="true",
+            newClientOrderId=cid,
+        )
+    except Exception:
+        return
+
+
+async def switch_active_symbols(
+    symbols: list[str],
+    *,
+    primary_symbol: str | None = None,
+    cleanup_removed: bool = True,
+    reason: str = "",
+) -> None:
+    """
+    Switch bot to trade ONLY the given symbols (currently, dashboard expects 1 symbol, but supports list).
+    This will restart bot threads, re-seed SMA, and resubscribe market WS.
+    """
+    assert ctx is not None
+    syms = [str(s).upper() for s in symbols if str(s).strip()]
+    if not syms:
+        raise ValueError("symbols must be non-empty")
+    # keep order but remove duplicates
+    seen = set()
+    syms = [s for s in syms if not (s in seen or seen.add(s))]
+
+    prim = (primary_symbol or syms[0]).upper()
+    ctx.settings.ensure_symbol(prim)
+    for s in syms:
+        ctx.settings.ensure_symbol(s)
+    ctx.settings.set_primary_symbol(prim)
+
+    old_syms = ctx.symbols[:]
+    removed = [s for s in old_syms if s not in set(syms)]
+
+    # Cleanup removed symbols before detaching.
+    if cleanup_removed and removed:
+        old_state = ctx.state
+        await asyncio.to_thread(
+            lambda: [_cleanup_symbol_sync(s, state=old_state, client_order_id_prefix=ctx.cfg.client_order_id_prefix) for s in removed]
+        )
+
+    # Stop current bot threads
+    if ctx.shutdown_bot is not None:
+        try:
+            ctx.shutdown_bot.set()
+        except Exception:
+            pass
+        threads = ctx.threads[:] if ctx.threads else []
+
+        def _join_all():
+            for t in threads:
+                try:
+                    t.join(timeout=5)
+                except Exception:
+                    continue
+
+        await asyncio.to_thread(_join_all)
+
+    # Replace active symbol set
+    ctx.symbols = syms
+
+    # New state store for active symbols
+    state = StateStore(ctx.symbols, ctx.cfg.sma_period)
+    ctx.state = state
+
+    # Filters + SMA seed + initial positions (blocking REST; run in background threads)
+    info = await asyncio.to_thread(ctx.service.exchange_info)
+    filt_map = parse_filters(info, ctx.symbols)
+    for sym in ctx.symbols:
+        if sym not in filt_map:
+            raise RuntimeError(f"Missing filters for {sym} in exchangeInfo")
+        state.set_filters(sym, filt_map[sym])
+
+    await asyncio.to_thread(seed_sma, ctx.service, state, ctx.symbols, ctx.cfg.kline_interval, ctx.cfg.sma_period)
+    await asyncio.to_thread(init_positions, ctx.service, state, ctx.symbols)
+
+    # Start new bot threads on this symbol set
+    sym_cfgs = {s: ctx.settings.get_symbol_config(s) for s in ctx.symbols}
+    bot_cfg = clone_cfg_with_symbols(ctx.cfg, sym_cfgs)
+    shutdown_bot, exec_q, threads = start_bot_threads(
+        bot_cfg,
+        ctx.runtime,
+        ctx.service,
+        state,
+        symbol_cfg_provider=ctx.settings.get_symbol_config,
+    )
+    ctx.shutdown_bot = shutdown_bot
+    ctx.exec_q = exec_q
+    ctx.threads = threads
+    log.info("Switched active symbols to %s (primary=%s) reason=%s", ",".join(ctx.symbols), prim, reason)
 
 
 @app.on_event("startup")
@@ -629,50 +847,34 @@ async def on_startup():
     ctx = AppContext(cfg)
     assert ctx is not None
 
-    # Default UI/trading symbol: top gainer in configured universe.
+    # Default trading symbol: top gainer (USDT perpetual) from 24h rankings.
+    default_sym = ctx.symbols[0]
     try:
         tickers = await get_24hr_tickers_cached(max_age_s=0.0)
-        allowed = set(ctx.settings.symbols())
         best_sym = None
         best_pct: Decimal | None = None
         for t in tickers:
             sym = str(t.get("symbol", "")).upper()
-            if sym not in allowed:
+            if not sym.endswith("USDT") or "_" in sym:
                 continue
-            pct = _safe_decimal(t.get("priceChangePercent", "0"))
+            pct = _safe_decimal_opt(t.get("priceChangePercent", "0"))
+            if pct is None:
+                continue
             if best_pct is None or pct > best_pct:
                 best_pct = pct
                 best_sym = sym
         if best_sym:
-            ctx.settings.set_primary_symbol(best_sym)
+            default_sym = best_sym
             log.info(
-                "Default primary symbol set by rankings: %s (24h=%.2f%%)",
+                "Default symbol set by rankings: %s (24h=%.2f%%)",
                 best_sym,
                 float(best_pct) if best_pct is not None else 0.0,
             )
     except Exception as e:
-        log.warning("Default primary symbol ranking failed: %s", e)
+        log.warning("Default symbol ranking failed: %s", e)
 
-    # Exchange filters + SMA seeding + initial positions
-    info = ctx.service.exchange_info()
-    filt_map = parse_filters(info, ctx.symbols)
-    for sym in ctx.symbols:
-        if sym not in filt_map:
-            raise RuntimeError(f"Missing filters for {sym} in exchangeInfo")
-        ctx.state.set_filters(sym, filt_map[sym])
-    seed_sma(ctx.service, ctx.state, ctx.symbols, cfg.kline_interval, cfg.sma_period)
-    init_positions(ctx.service, ctx.state, ctx.symbols)
-
-    # Start bot threads (strategy loop) in background
-    shutdown_bot, exec_q = start_bot_threads(
-        cfg,
-        ctx.runtime,
-        ctx.service,
-        ctx.state,
-        symbol_cfg_provider=ctx.settings.get_symbol_config,
-    )
-    ctx.shutdown_bot = shutdown_bot
-    ctx.exec_q = exec_q
+    # Start bot threads (single-symbol mode) in background
+    await switch_active_symbols([default_sym], primary_symbol=default_sym, cleanup_removed=False, reason="startup")
 
     # Start asyncio poller
     asyncio.create_task(metrics_poller())

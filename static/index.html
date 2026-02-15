@@ -452,7 +452,7 @@
 
         let items = [];
         try {
-            const resp = await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=50&universe=configured`);
+            const resp = await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);
             const js = await resp.json();
             items = js.items || [];
         } catch (e) {
@@ -485,17 +485,14 @@
     }
 
     function fillSymbolFields(symbol) {
-        if (!settingsCache || !settingsCache.symbols) return;
-        const s = settingsCache.symbols[symbol];
-        if (!s) {
-            document.getElementById('cfg-enabled').checked = false;
-            document.getElementById('cfg-notional').value = '';
-            document.getElementById('cfg-leverage').value = '';
-            return;
-        }
+        if (!settingsCache) return;
+        const defaults = settingsCache.defaults || { enabled: true, notional_usdt: '', leverage: '' };
+        const symMap = settingsCache.symbols || {};
+        const s = symMap[symbol] || defaults;
+
         document.getElementById('cfg-enabled').checked = !!s.enabled;
-        document.getElementById('cfg-notional').value = (s.notional_usdt != null) ? s.notional_usdt : '';
-        document.getElementById('cfg-leverage').value = (s.leverage != null) ? s.leverage : '';
+        document.getElementById('cfg-notional').value = (s.notional_usdt != null) ? s.notional_usdt : (defaults.notional_usdt != null ? defaults.notional_usdt : '');
+        document.getElementById('cfg-leverage').value = (s.leverage != null) ? s.leverage : (defaults.leverage != null ? defaults.leverage : '');
     }
 
     async function applySettings() {
