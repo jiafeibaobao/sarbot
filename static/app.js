@@ -1,6 +1,9 @@
 ﻿
 const chartCanvas=document.getElementById('mainChart');
 const chartCtx=chartCanvas?chartCanvas.getContext('2d'):null;
+const jsStatusEl=document.getElementById('js-status');
+function setJsStatus(msg){if(jsStatusEl)jsStatusEl.textContent=msg}
+setJsStatus('JS: running');
 const CHART_POINTS=120;
 const priceData=Array(CHART_POINTS).fill(null),smaData=Array(CHART_POINTS).fill(null),labels=Array(CHART_POINTS).fill('');
 let chart=null;
@@ -15,6 +18,11 @@ const FALLBACK_HOST='18.176.58.42';
 const runtimeHost=location.host||FALLBACK_HOST;
 const apiBase=location.host?'':`http://${runtimeHost}`;
 const wsUrl=()=>location.host?`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`:`ws://${runtimeHost}/ws`;
+function reportClient(msg){
+  try{fetch(`${apiBase}/api/client-log`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:String(msg).slice(0,500),ts:new Date().toISOString()})})}catch(_){/* no-op */}
+}
+window.addEventListener('error',(e)=>{setJsStatus('JS: error');reportClient(`error:${e.message||'unknown'}`)});
+window.addEventListener('unhandledrejection',(e)=>{setJsStatus('JS: promise error');reportClient(`promise:${e.reason||'unknown'}`)});
 let pollTimer=null;
 function startFallbackPolling(){if(pollTimer)return;pollTimer=setInterval(async()=>{try{const r=await fetch(`${apiBase}/api/dashboard`);if(r.ok){applyData(await r.json())}}catch(_){/* no-op */}},1000)}
 function stopFallbackPolling(){if(!pollTimer)return;clearInterval(pollTimer);pollTimer=null}
@@ -58,5 +66,5 @@ function formatPnL(el,v,id){if(v==null){el.innerText='--';el.className='v';retur
 function formatUptime(s){s=Math.max(0,Number(s)||0);return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`}
 function log(msg,type='info'){const b=$('sys-log'),d=document.createElement('div');let c='text-light';if(type==='success')c='text-success';if(type==='error')c='text-danger';if(type==='warn')c='text-warning';if(type==='info')c='text-info';d.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${c}">${msg}</span>`;b.insertBefore(d,b.firstChild);while(b.children.length>240)b.removeChild(b.lastChild)}
 function clearLogs(){$('sys-log').innerHTML=''}
-refreshChart(true);reloadSettings();startFallbackPolling();connectWs();
+setJsStatus('JS: init');refreshChart(true);reloadSettings();startFallbackPolling();connectWs();setJsStatus('JS: ready');
 

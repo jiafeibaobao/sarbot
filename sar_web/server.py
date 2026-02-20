@@ -443,6 +443,14 @@ async def api_dashboard():
     return await build_dashboard_payload()
 
 
+@app.post("/api/client-log")
+async def api_client_log(payload: dict[str, Any]):
+    msg = str(payload.get("message", ""))[:500]
+    ts = str(payload.get("ts", ""))
+    log.warning("CLIENT_LOG ts=%s msg=%s", ts, msg)
+    return {"ok": True}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
