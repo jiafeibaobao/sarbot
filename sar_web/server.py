@@ -434,6 +434,12 @@ async def api_status():
     return {"running": ctx.runtime.is_running(), "symbols": ctx.symbols}
 
 
+@app.get("/api/dashboard")
+async def api_dashboard():
+    assert ctx is not None
+    return await build_dashboard_payload()
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()

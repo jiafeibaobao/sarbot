@@ -153,11 +153,14 @@ const FALLBACK_HOST='18.176.58.42';
 const runtimeHost=location.host||FALLBACK_HOST;
 const apiBase=location.host?'':`http://${runtimeHost}`;
 const wsUrl=()=>location.host?`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`:`ws://${runtimeHost}/ws`;
+let pollTimer=null;
+function startFallbackPolling(){if(pollTimer)return;pollTimer=setInterval(async()=>{try{const r=await fetch(`${apiBase}/api/dashboard`);if(r.ok){applyData(await r.json())}}catch(_){/* no-op */}},1000)}
+function stopFallbackPolling(){if(!pollTimer)return;clearInterval(pollTimer);pollTimer=null}
 function sanitizePrice(v){const n=Number(v);return Number.isFinite(n)&&n>0?n:null}
 function pushChartPoint(arr,val,fallback){arr.shift();arr.push(val!=null?val:(fallback!=null?fallback:null))}
 function syncChartScale(){if(!chart)return;const vals=priceData.concat(smaData).filter((v)=>Number.isFinite(v)&&v>0);if(vals.length<2){chart.options.scales.y.min=undefined;chart.options.scales.y.max=undefined;return}const min=Math.min(...vals),max=Math.max(...vals),mid=(min+max)/2,span=Math.max(max-min,mid*0.002),pad=Math.max(span*0.18,mid*0.0005);chart.options.scales.y.min=Math.max(0,min-pad);chart.options.scales.y.max=max+pad}
 function refreshChart(force){const now=Date.now();if(!chart)chart=createChartInstance();if(!chart)return;if(!force&&now-lastChartUpdateTs<300)return;syncChartScale();chart.update('none');lastChartUpdateTs=now}
-function connectWs(){try{ws=new WebSocket(wsUrl())}catch(_){log('[WS] 地址无效，稍后重连','warn');setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000);return}ws.onopen=()=>{wsBackoff=500;log('[WS] 连接成功','success')};ws.onmessage=(e)=>{try{applyData(JSON.parse(e.data))}catch(_){}};ws.onclose=()=>{log('[WS] 连接断开，正在重连...','warn');setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000)};ws.onerror=()=>{try{ws.close()}catch(_){}}}
+function connectWs(){try{ws=new WebSocket(wsUrl())}catch(_){log('[WS] 地址无效，稍后重连','warn');startFallbackPolling();setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000);return}ws.onopen=()=>{wsBackoff=500;stopFallbackPolling();log('[WS] 连接成功','success')};ws.onmessage=(e)=>{try{applyData(JSON.parse(e.data))}catch(_){}};ws.onclose=()=>{startFallbackPolling();log('[WS] 连接断开，正在重连...','warn');setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000)};ws.onerror=()=>{try{ws.close()}catch(_){}}}
 async function reloadSettings(){try{const r=await fetch(`${apiBase}/api/settings`);const j=await r.json();if(!r.ok){log(`[CFG] 读取设置失败: ${j.detail||r.status}`,'error');return}settingsCache=j;if(typeof j.running==='boolean')setRunning(j.running);$('cfg-rank-mode').onchange=()=>reloadRankings(true);await reloadRankings(false)}catch(_){log('[CFG] 读取设置失败','error')}}
 async function reloadRankings(force){const kind=$('cfg-rank-mode').value||'gainers';let items=[];try{const r=await fetch(`${apiBase}/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);const j=await r.json();if(!r.ok)throw new Error();items=j.items||[]}catch(_){items=Object.keys((settingsCache&&settingsCache.symbols)||{}).map(s=>({symbol:s,change_pct:0}))}
 const prim=$('cfg-primary');prim.innerHTML='';for(const it of items){const pct=Number(it.change_pct);const opt=document.createElement('option');opt.value=it.symbol;opt.textContent=`${it.symbol} (${isFinite(pct)?((pct>=0?'+':'')+pct.toFixed(2)+'%'):'--'})`;prim.appendChild(opt)}
@@ -193,7 +196,7 @@ function formatPnL(el,v,id){if(v==null){el.innerText='--';el.className='v';retur
 function formatUptime(s){s=Math.max(0,Number(s)||0);return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`}
 function log(msg,type='info'){const b=$('sys-log'),d=document.createElement('div');let c='text-light';if(type==='success')c='text-success';if(type==='error')c='text-danger';if(type==='warn')c='text-warning';if(type==='info')c='text-info';d.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${c}">${msg}</span>`;b.insertBefore(d,b.firstChild);while(b.children.length>240)b.removeChild(b.lastChild)}
 function clearLogs(){$('sys-log').innerHTML=''}
-refreshChart(true);reloadSettings();connectWs();
+refreshChart(true);reloadSettings();startFallbackPolling();connectWs();
 </script>
 </body>
 </html>
