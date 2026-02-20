@@ -19,7 +19,7 @@
 .btn-control{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--sub);display:inline-flex;gap:8px;align-items:center;cursor:pointer}.btn-control.active{border-color:rgba(14,203,129,.6);color:var(--g);background:rgba(14,203,129,.12)}.btn-control.stopped{border-color:rgba(246,70,93,.6);color:var(--r);background:rgba(246,70,93,.12)}
 .kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(16,27,42,.55)}.kpi .l{font-size:.74rem;color:var(--sub);text-transform:uppercase}.kpi .v{font-size:1.28rem;font-weight:700;line-height:1.2}.kpi .s{font-size:.78rem;color:var(--sub)}
 .main{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(330px,1fr);gap:12px}.stack{display:grid;gap:12px}.strip{padding:12px}.mgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.mini{padding:8px;border:1px solid var(--line);border-radius:10px;background:rgba(8,14,22,.55)}.mini .k{font-size:.7rem;color:var(--sub);text-transform:uppercase}.mini .v{font-family:"JetBrains Mono",monospace;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chart{padding:10px}.chead{display:flex;justify-content:space-between;padding:0 4px 8px}.chead .t{font-size:.82rem;color:var(--sub);text-transform:uppercase}.chead .p{font-family:"JetBrains Mono",monospace;color:var(--y);font-weight:700}#mainChart{height:380px}
+.chart{padding:10px;height:420px;min-height:420px;max-height:420px;display:flex;flex-direction:column}.chead{display:flex;justify-content:space-between;padding:0 4px 8px}.chead .t{font-size:.82rem;color:var(--sub);text-transform:uppercase}.chead .p{font-family:"JetBrains Mono",monospace;color:var(--y);font-weight:700}.chart-body{position:relative;flex:1;min-height:0}#mainChart{width:100%!important;height:100%!important;display:block}
 .signal{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.box{padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(8,14,22,.52)}.box .t{font-size:.74rem;color:var(--sub);text-transform:uppercase}.box .big{font:700 1.45rem "JetBrains Mono",monospace}.kv{display:flex;justify-content:space-between;font-size:.84rem;color:var(--sub);margin-top:4px}.kv b{font-family:"JetBrains Mono",monospace;color:var(--txt)}.bar{height:8px;background:#26384f;border-radius:999px;overflow:hidden;margin:8px 0}
 .side .panel{padding:12px}.pt{font-size:.78rem;color:var(--sub);text-transform:uppercase;display:flex;justify-content:space-between;margin-bottom:8px}.phead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.psize{font:700 1.4rem "JetBrains Mono",monospace}.badgex{padding:6px 10px;border-radius:10px;border:1px solid var(--line)}
 .form-label{font-size:.78rem;color:var(--sub);margin-bottom:4px}.form-control,.form-select{background:rgba(8,14,22,.65);border-color:var(--line);color:var(--txt)}.hint{font-size:.8rem;color:var(--sub);margin-top:8px;min-height:18px}
@@ -27,7 +27,7 @@
 .log{height:230px;overflow:auto;background:#06090e;border:1px solid var(--line);border-radius:10px;padding:8px;font:500 .79rem "JetBrains Mono",monospace}.log-time{color:#7f93b3;margin-right:8px}
 .trend-up{color:var(--g)!important}.trend-down{color:var(--r)!important}
 @media(max-width:1400px){.kpi-grid{grid-template-columns:repeat(3,1fr)}.mgrid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:1024px){.top{grid-template-columns:1fr}.right{justify-content:space-between}.main{grid-template-columns:1fr}.signal{grid-template-columns:1fr}#mainChart{height:300px}}
+@media(max-width:1024px){.top{grid-template-columns:1fr}.right{justify-content:space-between}.main{grid-template-columns:1fr}.signal{grid-template-columns:1fr}.chart{height:340px;min-height:340px;max-height:340px}}
 @media(max-width:680px){.kpi-grid,.mgrid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
@@ -75,7 +75,7 @@
 
       <div class="panel chart">
         <div class="chead"><div class="t">Price vs SMA Stop</div><div class="p" id="chart-last-price">--</div></div>
-        <canvas id="mainChart"></canvas>
+        <div class="chart-body"><canvas id="mainChart"></canvas></div>
       </div>
 
       <div class="panel signal">
@@ -138,11 +138,16 @@
 
 <script>
 const ctx=document.getElementById('mainChart').getContext('2d');
-const priceData=Array(120).fill(null),smaData=Array(120).fill(null),labels=Array(120).fill('');
-const chart=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Price',data:priceData,borderColor:'#f3ba2f',backgroundColor:'rgba(243,186,47,.12)',borderWidth:2,pointRadius:0,fill:true,tension:.15},{label:'SMA',data:smaData,borderColor:'#53d2ff',borderWidth:1.5,pointRadius:0,borderDash:[6,6],tension:.08}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'rgba(156,176,205,.13)'},ticks:{color:'#96abcd',font:{family:'JetBrains Mono'},callback:(v)=>fmtPrice(v)}}},animation:false}});
-let ws=null,wsBackoff=500,settingsCache=null;
+const CHART_POINTS=120;
+const priceData=Array(CHART_POINTS).fill(null),smaData=Array(CHART_POINTS).fill(null),labels=Array(CHART_POINTS).fill('');
+const chart=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Price',data:priceData,borderColor:'#f3ba2f',backgroundColor:'rgba(243,186,47,.12)',borderWidth:2,pointRadius:0,fill:false,tension:.15},{label:'SMA',data:smaData,borderColor:'#53d2ff',borderWidth:1.5,pointRadius:0,borderDash:[6,6],tension:.08}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'rgba(156,176,205,.13)'},ticks:{color:'#96abcd',font:{family:'JetBrains Mono'},callback:(v)=>fmtPrice(v)}}},parsing:false,normalized:true,animation:false}});
+let ws=null,wsBackoff=500,settingsCache=null,lastChartPrice=null,lastChartSma=null,lastChartUpdateTs=0;
 const $=(id)=>document.getElementById(id);
 const wsUrl=()=>`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+function sanitizePrice(v){const n=Number(v);return Number.isFinite(n)&&n>0?n:null}
+function pushChartPoint(arr,val,fallback){arr.shift();arr.push(val!=null?val:(fallback!=null?fallback:null))}
+function syncChartScale(){const vals=priceData.concat(smaData).filter((v)=>Number.isFinite(v)&&v>0);if(vals.length<2){chart.options.scales.y.min=undefined;chart.options.scales.y.max=undefined;return}const min=Math.min(...vals),max=Math.max(...vals),mid=(min+max)/2,span=Math.max(max-min,mid*0.002),pad=Math.max(span*0.18,mid*0.0005);chart.options.scales.y.min=Math.max(0,min-pad);chart.options.scales.y.max=max+pad}
+function refreshChart(force){const now=Date.now();if(!force&&now-lastChartUpdateTs<300)return;syncChartScale();chart.update('none');lastChartUpdateTs=now}
 function connectWs(){ws=new WebSocket(wsUrl());ws.onopen=()=>{wsBackoff=500;log('[WS] 连接成功','success')};ws.onmessage=(e)=>{try{applyData(JSON.parse(e.data))}catch(_){}};ws.onclose=()=>{log('[WS] 连接断开，正在重连...','warn');setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000)};ws.onerror=()=>{try{ws.close()}catch(_){}}}
 async function reloadSettings(){try{const r=await fetch('/api/settings');const j=await r.json();if(!r.ok){log(`[CFG] 读取设置失败: ${j.detail||r.status}`,'error');return}settingsCache=j;if(typeof j.running==='boolean')setRunning(j.running);$('cfg-rank-mode').onchange=()=>reloadRankings(true);await reloadRankings(false)}catch(_){log('[CFG] 读取设置失败','error')}}
 async function reloadRankings(force){const kind=$('cfg-rank-mode').value||'gainers';let items=[];try{const r=await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);const j=await r.json();if(!r.ok)throw new Error();items=j.items||[]}catch(_){items=Object.keys((settingsCache&&settingsCache.symbols)||{}).map(s=>({symbol:s,change_pct:0}))}
@@ -162,11 +167,13 @@ if(paused){$('stop-status').innerText='PAUSED';$('stop-status').className='trend
 if(d.market){const m=d.market;$('contract-type').innerText=m.contract_type||'--';$('symbol-status').innerText=m.symbol_status||'--';$('mark-price').innerText=m.mark_price!=null?fmtPrice(m.mark_price):'--';$('index-price').innerText=m.index_price!=null?fmtPrice(m.index_price):'--';$('estimated-settle-price').innerText=m.estimated_settle_price!=null?fmtPrice(m.estimated_settle_price):'--';$('high-24h').innerText=m.high_24h!=null?fmtPrice(m.high_24h):'--';$('low-24h').innerText=m.low_24h!=null?fmtPrice(m.low_24h):'--';$('volume-24h').innerText=m.volume_24h!=null?fmtCompact(m.volume_24h):'--';$('quote-volume-24h').innerText=m.quote_volume_24h!=null?`${fmtCompact(m.quote_volume_24h)} USDT`:'--';$('open-interest').innerText=m.open_interest!=null?fmtCompact(m.open_interest):'--';$('open-interest-usdt').innerText=m.open_interest_usdt!=null?`${fmtCompact(m.open_interest_usdt)} USDT`:'--';$('weighted-avg-price').innerText=m.weighted_avg_price_24h!=null?fmtPrice(m.weighted_avg_price_24h):'--';$('basis-price').innerText=m.price_basis!=null?fmtPriceSigned(m.price_basis):'--';$('spread-bps').innerText=m.spread_bps!=null?`${Number(m.spread_bps).toFixed(2)} bps`:'--';
 const fr=Number(m.funding_rate_pct);if(Number.isFinite(fr)){$('funding-rate').innerText=`${fr>=0?'+':''}${fr.toFixed(4)}%`;$('funding-rate').className=fr>=0?'v trend-up':'v trend-down'}else{$('funding-rate').innerText='--';$('funding-rate').className='v'}
 const ch=Number(m.change_24h_pct);if(Number.isFinite(ch)){$('change-24h').innerText=`${ch>=0?'+':''}${ch.toFixed(2)}%`;$('change-24h').className=ch>=0?'trend-up':'trend-down'}else{$('change-24h').innerText='--';$('change-24h').className=''}$('next-funding').innerText=fmtCountdown(m.next_funding_countdown_s)}
-if(d.price!=null){$('last-price').innerText=fmtPrice(d.price);$('chart-last-price').innerText=fmtPrice(d.price);priceData.shift();priceData.push(Number(d.price))}
-if(d.sma!=null){$('sma-price').innerText=fmtPrice(d.sma);smaData.shift();smaData.push(Number(d.sma))}
+const nextPrice=sanitizePrice(d.price);if(nextPrice!=null){$('last-price').innerText=fmtPrice(nextPrice);$('chart-last-price').innerText=fmtPrice(nextPrice);lastChartPrice=nextPrice}
+pushChartPoint(priceData,nextPrice,lastChartPrice);
+const nextSma=sanitizePrice(d.sma);if(nextSma!=null){$('sma-price').innerText=fmtPrice(nextSma);lastChartSma=nextSma}
+pushChartPoint(smaData,nextSma,lastChartSma);
 if(d.dist_pct!=null){$('dist-percent').innerText=`${Number(d.dist_pct).toFixed(3)}%`;let w=100-(Number(d.dist_pct)*100);w=Math.max(5,Math.min(100,w));$('dist-bar').style.width=`${w}%`}
 if(d.vps){if(d.vps.cpu_pct!=null){$('cpu-val').innerText=`${Number(d.vps.cpu_pct).toFixed(0)}%`;$('cpu-bar').style.width=`${d.vps.cpu_pct}%`}if(d.vps.ram_pct!=null){$('ram-val').innerText=`${Number(d.vps.ram_pct).toFixed(0)}%`;$('ram-bar').style.width=`${d.vps.ram_pct}%`}if(d.vps.disk_read_bps!=null&&d.vps.disk_write_bps!=null){$('disk-io').innerText=`R ${fmtBps(d.vps.disk_read_bps)} / W ${fmtBps(d.vps.disk_write_bps)}`;const lvl=Math.min(100,Math.max(0,((Number(d.vps.disk_read_bps)+Number(d.vps.disk_write_bps))/(50*1024*1024)*100)));$('disk-bar').style.width=`${Math.max(5,lvl).toFixed(0)}%`}}
-chart.update('none')}
+refreshChart(false)}
 function fmtMoney(v){const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--'}
 function fmtPrice(v){const n=Number(v);if(!Number.isFinite(n))return'--';const a=Math.abs(n);let d=2;if(a<1)d=5;else if(a<100)d=4;else if(a<1000)d=3;return n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})}
 function fmtPriceSigned(v){const n=Number(v);if(!Number.isFinite(n))return'--';return`${n>=0?'+':'-'}${fmtPrice(Math.abs(n))}`}
@@ -177,7 +184,7 @@ function formatPnL(el,v,id){if(v==null){el.innerText='--';el.className='v';retur
 function formatUptime(s){s=Math.max(0,Number(s)||0);return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`}
 function log(msg,type='info'){const b=$('sys-log'),d=document.createElement('div');let c='text-light';if(type==='success')c='text-success';if(type==='error')c='text-danger';if(type==='warn')c='text-warning';if(type==='info')c='text-info';d.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${c}">${msg}</span>`;b.insertBefore(d,b.firstChild);while(b.children.length>240)b.removeChild(b.lastChild)}
 function clearLogs(){$('sys-log').innerHTML=''}
-connectWs();reloadSettings();
+refreshChart(true);connectWs();reloadSettings();
 </script>
 </body>
 </html>
