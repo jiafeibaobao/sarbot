@@ -274,7 +274,10 @@ async def get_exchange_symbols_cached(max_age_s: float = 300.0) -> dict[str, dic
 def index():
     p = static_dir / "index.html"
     if p.exists():
-        return FileResponse(str(p))
+        return FileResponse(
+            str(p),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
     return JSONResponse({"ok": True, "msg": "static/index.html not found"}, status_code=404)
 
 
