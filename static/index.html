@@ -1,744 +1,183 @@
-<!DOCTYPE html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SAR 量化实盘资金看板</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    
-    <style>
-        :root {
-            --bg-color: #0F172A;
-            --panel-bg: #1E293B;
-            --border-color: #334155;
-            --text-primary: #F1F5F9;
-            --text-secondary: #94A3B8;
-            
-            --accent-blue: #38BDF8;
-            --profit-green: #10B981;
-            --loss-red: #EF4444;
-            --warn-yellow: #F59E0B;
-            --purple-vps: #8B5CF6;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-            overflow-x: hidden;
-            padding-bottom: 30px;
-        }
-
-        .dashboard-container {
-            max-width: 1800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        .navbar-custom {
-            background-color: var(--panel-bg);
-            border-bottom: 1px solid var(--border-color);
-            padding: 15px 25px;
-            border-radius: 12px;
-            margin-bottom: 25px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
-
-        .stat-card {
-            background-color: var(--panel-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 20px;
-            height: 100%;
-            position: relative;
-            transition: transform 0.2s, box-shadow 0.2s;
-            overflow: hidden;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
-            border-color: var(--border-color);
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 4px;
-            background-color: var(--accent-blue);
-        }
-        
-        .card-profit::before { background-color: var(--profit-green); }
-        .card-loss::before { background-color: var(--loss-red); }
-        .card-warn::before { background-color: var(--warn-yellow); }
-        .card-neutral::before { background-color: var(--text-secondary); }
-
-        .card-label {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-
-        .card-value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            margin-bottom: 5px;
-        }
-        
-        .card-sub {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-
-        .trend-up { color: var(--profit-green); }
-        .trend-down { color: var(--loss-red); }
-        .badge-soft-green { background: rgba(16, 185, 129, 0.15); color: var(--profit-green); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; }
-        .badge-soft-red { background: rgba(239, 68, 68, 0.15); color: var(--loss-red); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; }
-
-        .btn-control {
-            background: #0f172a;
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            padding: 8px 20px;
-            border-radius: 30px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s;
-        }
-        .btn-control.active {
-            border-color: var(--profit-green);
-            color: var(--profit-green);
-            background: rgba(16, 185, 129, 0.05);
-            box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
-        }
-        .btn-control.stopped {
-            border-color: var(--loss-red);
-            color: var(--loss-red);
-            background: rgba(239, 68, 68, 0.05);
-        }
-
-        .grid-finance { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px; }
-        .grid-strategy { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px; }
-        
-        @media (max-width: 1200px) {
-            .grid-finance, .grid-strategy { grid-template-columns: repeat(2, 1fr); }
-        }
-        @media (max-width: 768px) {
-            .grid-finance, .grid-strategy { grid-template-columns: 1fr; }
-        }
-
-        .vps-mini-panel {
-            background: var(--panel-bg);
-            border-top: 1px solid var(--border-color);
-            padding: 15px 20px;
-            border-radius: 12px;
-            margin-top: 20px;
-            width: 100%;
-            flex: 0 0 100%;
-            clear: both;
-        }
-        .progress-slim { height: 6px; background: #334155; border-radius: 3px; overflow: hidden; margin-top: 8px; }
-        .progress-bar { transition: width 1s linear; }
-
-        .log-box {
-            background: #000;
-            border: 1px solid var(--border-color);
-            height: 250px;
-            overflow-y: auto;
-            padding: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
-            color: #ccc;
-            border-radius: 8px;
-        }
-        .log-time { color: #64748B; margin-right: 8px; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAR QUANT PRO</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+:root{--bg:#0b1018;--panel:#131d2b;--panel2:#0f1723;--line:#2a3f5f;--txt:#e8eef8;--sub:#9bb0ce;--y:#f3ba2f;--g:#0ecb81;--r:#f6465d;--c:#53d2ff}
+*{box-sizing:border-box}body{margin:0;color:var(--txt);font-family:"Space Grotesk",sans-serif;background:radial-gradient(900px 450px at 10% -5%,#223b66 0%,transparent 55%),radial-gradient(900px 450px at 95% 0%,#2e2a49 0%,transparent 55%),linear-gradient(160deg,#0b1018,#101a28);padding:16px}
+.shell{max-width:1880px;margin:0 auto;display:grid;gap:12px}.panel{background:linear-gradient(165deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 24px rgba(0,0,0,.28)}
+.top{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px;align-items:center;padding:14px}.brand{display:flex;gap:12px;align-items:center}.logo{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,var(--y),#ffd66a);color:#111}.sub{font-size:.83rem;color:var(--sub)}
+.pill{display:inline-flex;gap:8px;align-items:center;padding:6px 12px;border-radius:999px;border:1px solid var(--line);color:var(--y);font-weight:700;background:rgba(243,186,47,.08)}
+.ticker{display:flex;gap:12px;font-family:"JetBrains Mono",monospace;font-size:.9rem;color:var(--sub)}
+.right{display:flex;gap:12px;justify-content:flex-end;align-items:center}.clock{font-family:"JetBrains Mono",monospace;text-align:right}
+.btn-control{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.02);color:var(--sub);display:inline-flex;gap:8px;align-items:center;cursor:pointer}.btn-control.active{border-color:rgba(14,203,129,.6);color:var(--g);background:rgba(14,203,129,.12)}.btn-control.stopped{border-color:rgba(246,70,93,.6);color:var(--r);background:rgba(246,70,93,.12)}
+.kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(16,27,42,.55)}.kpi .l{font-size:.74rem;color:var(--sub);text-transform:uppercase}.kpi .v{font-size:1.28rem;font-weight:700;line-height:1.2}.kpi .s{font-size:.78rem;color:var(--sub)}
+.main{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(330px,1fr);gap:12px}.stack{display:grid;gap:12px}.strip{padding:12px}.mgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.mini{padding:8px;border:1px solid var(--line);border-radius:10px;background:rgba(8,14,22,.55)}.mini .k{font-size:.7rem;color:var(--sub);text-transform:uppercase}.mini .v{font-family:"JetBrains Mono",monospace;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart{padding:10px}.chead{display:flex;justify-content:space-between;padding:0 4px 8px}.chead .t{font-size:.82rem;color:var(--sub);text-transform:uppercase}.chead .p{font-family:"JetBrains Mono",monospace;color:var(--y);font-weight:700}#mainChart{height:380px}
+.signal{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.box{padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(8,14,22,.52)}.box .t{font-size:.74rem;color:var(--sub);text-transform:uppercase}.box .big{font:700 1.45rem "JetBrains Mono",monospace}.kv{display:flex;justify-content:space-between;font-size:.84rem;color:var(--sub);margin-top:4px}.kv b{font-family:"JetBrains Mono",monospace;color:var(--txt)}.bar{height:8px;background:#26384f;border-radius:999px;overflow:hidden;margin:8px 0}
+.side .panel{padding:12px}.pt{font-size:.78rem;color:var(--sub);text-transform:uppercase;display:flex;justify-content:space-between;margin-bottom:8px}.phead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.psize{font:700 1.4rem "JetBrains Mono",monospace}.badgex{padding:6px 10px;border-radius:10px;border:1px solid var(--line)}
+.form-label{font-size:.78rem;color:var(--sub);margin-bottom:4px}.form-control,.form-select{background:rgba(8,14,22,.65);border-color:var(--line);color:var(--txt)}.hint{font-size:.8rem;color:var(--sub);margin-top:8px;min-height:18px}
+.vline{padding:8px;border:1px solid var(--line);border-radius:10px;background:rgba(8,14,22,.5);margin-bottom:8px}.vh{display:flex;justify-content:space-between;font-size:.8rem;color:var(--sub)}.pbar{height:7px;background:#2a3e5f;border-radius:999px;overflow:hidden;margin-top:6px}
+.log{height:230px;overflow:auto;background:#06090e;border:1px solid var(--line);border-radius:10px;padding:8px;font:500 .79rem "JetBrains Mono",monospace}.log-time{color:#7f93b3;margin-right:8px}
+.trend-up{color:var(--g)!important}.trend-down{color:var(--r)!important}
+@media(max-width:1400px){.kpi-grid{grid-template-columns:repeat(3,1fr)}.mgrid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:1024px){.top{grid-template-columns:1fr}.right{justify-content:space-between}.main{grid-template-columns:1fr}.signal{grid-template-columns:1fr}#mainChart{height:300px}}
+@media(max-width:680px){.kpi-grid,.mgrid{grid-template-columns:1fr 1fr}}
+</style>
 </head>
 <body>
+<div class="shell">
+  <section class="panel top">
+    <div class="brand">
+      <div class="logo"><i class="fas fa-rocket"></i></div>
+      <div>
+        <div style="font-weight:700;font-size:1.3rem">SAR QUANT PRO <span class="badge text-bg-primary" style="font-size:.58em">LIVE</span></div>
+        <div class="sub">策略引擎 v3.2.1 | API延迟 <span id="api-latency">--</span></div>
+      </div>
+    </div>
+    <div style="display:grid;gap:6px;justify-items:center">
+      <div class="pill"><i class="fas fa-bolt"></i><span id="symbol-ticker">--</span><span id="contract-type">--</span><span id="symbol-status">--</span></div>
+      <div class="ticker"><span>Last <b id="last-price">--</b></span><span>Mark <b id="mark-price">--</b></span><span>24h <b id="change-24h">--</b></span></div>
+    </div>
+    <div class="right">
+      <div class="clock"><div id="sys-clock">--:--:--</div><div class="sub">运行时间 <span id="uptime">--</span></div></div>
+      <button class="btn-control active" id="bot-toggle" onclick="toggleBot()"><i class="fas fa-power-off"></i><span id="bot-state-text">系统运行中</span></button>
+    </div>
+  </section>
 
-<div class="dashboard-container">
+  <section class="kpi-grid">
+    <div class="kpi" id="card-equity"><div class="l">账户总权益</div><div class="v" id="total-equity">--</div><div class="s">可用 <span id="available-balance">--</span> | 占用 <span id="used-ratio">--</span></div></div>
+    <div class="kpi" id="card-unrealized"><div class="l">未实现盈亏</div><div class="v" id="unrealized-pnl">--</div><div class="s">ROE <span id="roe-val">--</span></div></div>
+    <div class="kpi" id="card-daily"><div class="l">当日已实现</div><div class="v" id="daily-pnl">--</div><div class="s">交易笔数 <span id="daily-trades">--</span></div></div>
+    <div class="kpi" id="card-total"><div class="l">累计总收益</div><div class="v" id="total-pnl">--</div><div class="s">收益率 <span id="yield-val">--</span></div></div>
+    <div class="kpi"><div class="l">资金费率</div><div class="v" id="funding-rate">--</div><div class="s">下次结算 <span id="next-funding">--</span></div></div>
+    <div class="kpi"><div class="l">未平仓量 OI</div><div class="v" id="open-interest">--</div><div class="s">名义价值 <span id="open-interest-usdt">--</span></div></div>
+  </section>
 
-    <div class="navbar-custom d-flex justify-content-between align-items-center">
-        <div class="d-flex align-items-center gap-3">
-            <div style="font-size: 1.5rem;"><i class="fas fa-rocket text-primary"></i></div>
-            <div>
-                <h5 class="m-0 fw-bold">SAR QUANT PRO <span class="badge bg-primary ms-2" style="font-size: 0.6em;">LIVE</span></h5>
-                <div class="text-secondary" style="font-size: 0.8rem;">策略引擎: v3.2.1 | API延迟: <span id="api-latency" class="text-success">--</span></div>
-            </div>
+  <section class="main">
+    <div class="stack">
+      <div class="panel strip">
+        <div class="mgrid">
+          <div class="mini"><div class="k">指数价格</div><div class="v" id="index-price">--</div></div>
+          <div class="mini"><div class="k">预估结算价</div><div class="v" id="estimated-settle-price">--</div></div>
+          <div class="mini"><div class="k">24h最高</div><div class="v" id="high-24h">--</div></div>
+          <div class="mini"><div class="k">24h最低</div><div class="v" id="low-24h">--</div></div>
+          <div class="mini"><div class="k">24h成交量</div><div class="v" id="volume-24h">--</div></div>
+          <div class="mini"><div class="k">24h成交额</div><div class="v" id="quote-volume-24h">--</div></div>
         </div>
+      </div>
 
-        <div class="d-flex align-items-center gap-4">
-            <div class="text-end d-none d-md-block">
-                <div id="sys-clock" class="fw-bold font-monospace">--:--:--</div>
-                <div class="text-secondary" style="font-size: 0.75rem;">运行时间: <span id="uptime">--</span></div>
-            </div>
-            <button class="btn-control active" id="bot-toggle" onclick="toggleBot()">
-                <i class="fas fa-power-off"></i> <span id="bot-state-text">系统运行中</span>
-            </button>
+      <div class="panel chart">
+        <div class="chead"><div class="t">Price vs SMA Stop</div><div class="p" id="chart-last-price">--</div></div>
+        <canvas id="mainChart"></canvas>
+      </div>
+
+      <div class="panel signal">
+        <div class="box">
+          <div class="t">反手触发监控</div>
+          <div class="big" id="dist-percent">--</div>
+          <div class="bar"><div id="dist-bar" class="progress-bar bg-danger" style="width:10%"></div></div>
+          <div class="kv"><span>SMA触发价</span><b id="sma-price">--</b></div>
+          <div class="kv"><span>挂单状态</span><b id="stop-status">--</b></div>
         </div>
+        <div class="box">
+          <div class="t">市场偏离信息</div>
+          <div class="kv"><span>Basis</span><b id="basis-price">--</b></div>
+          <div class="kv"><span>价差bps</span><b id="spread-bps">--</b></div>
+          <div class="kv"><span>24h均价</span><b id="weighted-avg-price">--</b></div>
+          <div class="kv"><span>策略状态</span><b id="strategy-state">--</b></div>
+        </div>
+      </div>
     </div>
 
-    <div class="grid-finance">
-        <div class="stat-card">
-            <div class="card-label">账户总权益 (Equity) <i class="fas fa-wallet"></i></div>
-            <div class="card-value" id="total-equity">--</div>
-            <div class="card-sub d-flex justify-content-between">
-                <span>可用: <span class="text-light" id="available-balance">--</span></span>
-                <span>占用: <span class="text-warning" id="used-ratio">--</span></span>
-            </div>
-        </div>
+    <div class="stack side">
+      <div class="panel">
+        <div class="pt">当前持仓 (Position) <i class="fas fa-chess-knight"></i></div>
+        <div class="phead"><span class="badgex" id="pos-badge">--</span><span class="psize" id="pos-size">--</span></div>
+        <div class="kv"><span>开仓均价</span><b id="entry-price">--</b></div>
+        <div class="kv"><span>强平价格</span><b id="liq-price">--</b></div>
+        <div class="kv"><span>杠杆</span><b id="position-leverage">--</b></div>
+        <div class="kv"><span>保证金模式</span><b id="position-margin-type">--</b></div>
+        <div class="kv"><span>持仓名义价值</span><b id="position-notional">--</b></div>
+        <div class="kv"><span>该币浮盈</span><b id="position-symbol-pnl">--</b></div>
+      </div>
 
-        <div class="stat-card card-neutral" id="card-unrealized">
-            <div class="card-label">未实现盈亏 (Floating) <i class="fas fa-water"></i></div>
-            <div class="card-value" id="unrealized-pnl">--</div>
-            <div class="card-sub">
-                持仓 ROE: <span class="badge-soft-green" id="roe-val">--</span>
-            </div>
+      <div class="panel">
+        <div class="pt">交易参数 (Settings) <i class="fas fa-sliders"></i></div>
+        <div class="mb-2"><label class="form-label">选币榜单</label><select class="form-select form-select-sm" id="cfg-rank-mode"><option value="gainers" selected>涨幅榜</option><option value="losers">跌幅榜</option></select></div>
+        <div class="mb-2"><label class="form-label">交易币种（默认榜单第1）</label><select class="form-select form-select-sm" id="cfg-primary"></select></div>
+        <div class="row g-2">
+          <div class="col-6"><label class="form-label">名义金额(USDT)</label><input class="form-control form-control-sm" id="cfg-notional" type="number" min="1" step="1"></div>
+          <div class="col-6"><label class="form-label">杠杆</label><input class="form-control form-control-sm" id="cfg-leverage" type="number" min="1" max="125" step="1"></div>
         </div>
+        <div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" id="cfg-enabled"><label class="form-check-label" for="cfg-enabled">启用该币种交易</label></div>
+        <div class="d-flex gap-2 mt-2"><button class="btn btn-sm btn-primary" onclick="applySettings()">应用</button><button class="btn btn-sm btn-outline-secondary" onclick="reloadSettings()">刷新</button></div>
+        <div class="hint" id="cfg-hint">应用后会更新参数并切换展示币种。</div>
+      </div>
 
-        <div class="stat-card card-neutral" id="card-daily">
-            <div class="card-label">当日已实现 (Today) <i class="fas fa-calendar-day"></i></div>
-            <div class="card-value" id="daily-pnl">--</div>
-            <div class="card-sub">
-                交易笔数: <span class="text-light" id="daily-trades">--</span>
-            </div>
-        </div>
+      <div class="panel">
+        <div class="pt">VPS 监控 <i class="fas fa-server"></i></div>
+        <div class="vline"><div class="vh"><span>CPU</span><span id="cpu-val">--</span></div><div class="pbar"><div id="cpu-bar" style="width:0%;height:100%;background:var(--c)"></div></div></div>
+        <div class="vline"><div class="vh"><span>RAM</span><span id="ram-val">--</span></div><div class="pbar"><div id="ram-bar" style="width:0%;height:100%;background:#ffbe55"></div></div></div>
+        <div class="vline"><div class="vh"><span>Disk IO</span><span id="disk-io">--</span></div><div class="pbar"><div id="disk-bar" style="width:5%;height:100%;background:var(--g)"></div></div></div>
+      </div>
 
-        <div class="stat-card card-neutral" id="card-total">
-            <div class="card-label">累计总收益 (Total PnL) <i class="fas fa-piggy-bank"></i></div>
-            <div class="card-value" id="total-pnl">--</div>
-            <div class="card-sub">
-                总收益率: <span class="text-success fw-bold" id="yield-val">--</span>
-            </div>
-        </div>
+      <div class="panel">
+        <div class="pt">System Logs <span class="badge text-bg-secondary" style="cursor:pointer" onclick="clearLogs()">Clear</span></div>
+        <div class="log" id="sys-log"></div>
+      </div>
     </div>
-
-    <div class="row mb-4">
-        <div class="col-lg-3">
-            <div class="stat-card card-warn mb-3">
-                <div class="card-label">当前持仓 (Position) <i class="fas fa-chess-knight"></i></div>
-                <div class="d-flex align-items-center justify-content-between mb-2">
-                    <span class="badge bg-secondary p-2 fs-6" id="pos-badge">--</span>
-                    <span class="fs-4 fw-bold" id="pos-size">--</span>
-                </div>
-                <div class="card-sub border-top border-secondary pt-2 mt-2">
-                    <div class="d-flex justify-content-between mb-1">
-                        <span>开仓均价:</span>
-                        <span class="text-light font-monospace" id="entry-price">--</span>
-                    </div>
-                    <div class="d-flex justify-content-between">
-                        <span>强平价格:</span>
-                        <span class="text-danger font-monospace" id="liq-price">--</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="stat-card card-neutral">
-                <div class="card-label">反手信号监控 (Signal) <i class="fas fa-radar"></i></div>
-                <div class="text-center py-3">
-                    <div class="text-secondary small mb-1">距离触发反手</div>
-                    <div class="fs-2 fw-bold text-white font-monospace" id="dist-percent">--</div>
-                    <div class="progress-slim bg-dark mb-2">
-                        <div class="progress-bar bg-danger" id="dist-bar" style="width: 20%"></div>
-                    </div>
-                    <div class="small text-secondary">
-                        触发价 (SMA): <span id="sma-price" class="text-warning">--</span>
-                    </div>
-                </div>
-                <div class="alert alert-dark border-secondary d-flex align-items-center py-2 mb-0">
-                    <i class="fas fa-server text-primary me-2"></i>
-                    <div class="small text-secondary flex-grow-1">挂单状态 (Server Order)</div>
-                    <span class="badge bg-primary" id="stop-status">--</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-6">
-            <div class="stat-card" style="padding: 10px;">
-                <canvas id="mainChart" style="height: 350px; width: 100%;"></canvas>
-            </div>
-        </div>
-
-        <div class="col-lg-3">
-            <div class="stat-card mb-3">
-                <div class="card-label">交易参数 (Settings) <i class="fas fa-sliders"></i></div>
-                <div class="mb-2">
-                    <label class="form-label small text-secondary mb-1">选币榜单</label>
-                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-rank-mode">
-                        <option value="gainers" selected>涨幅榜</option>
-                        <option value="losers">跌幅榜</option>
-                    </select>
-                </div>
-                <div class="mb-2">
-                    <label class="form-label small text-secondary mb-1">交易币种（默认: 涨幅榜第1名）</label>
-                    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="cfg-primary"></select>
-                </div>
-                <div class="row g-2">
-                    <div class="col-6">
-                        <label class="form-label small text-secondary mb-1">名义金额 (USDT)</label>
-                        <input class="form-control form-control-sm bg-dark text-light border-secondary" id="cfg-notional" type="number" min="1" step="1" />
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label small text-secondary mb-1">杠杆</label>
-                        <input class="form-control form-control-sm bg-dark text-light border-secondary" id="cfg-leverage" type="number" min="1" max="125" step="1" />
-                    </div>
-                </div>
-                <div class="form-check form-switch mt-2">
-                    <input class="form-check-input" type="checkbox" role="switch" id="cfg-enabled">
-                    <label class="form-check-label small text-secondary" for="cfg-enabled">启用该币种交易</label>
-                </div>
-                <div class="d-flex gap-2 mt-3">
-                    <button class="btn btn-sm btn-primary" onclick="applySettings()">应用</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="reloadSettings()">刷新</button>
-                </div>
-                <div class="small text-secondary mt-2" id="cfg-hint">应用会更新该币种参数，并将驾驶舱展示切换到该币种。</div>
-            </div>
-
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <span class="text-secondary small fw-bold">SYSTEM LOGS</span>
-                <span class="badge bg-secondary" style="cursor: pointer" onclick="clearLogs()">Clear</span>
-            </div>
-            <div class="log-box" id="sys-log"></div>
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="col-12">
-            <div class="vps-mini-panel">
-                <div class="row align-items-center">
-                    <div class="col-md-1 text-secondary fw-bold"><i class="fas fa-server me-2"></i>VPS</div>
-                    
-                    <div class="col-md-3">
-                        <div class="d-flex justify-content-between small text-secondary">
-                            <span>CPU (4 Core)</span>
-                            <span id="cpu-val">--</span>
-                        </div>
-                        <div class="progress-slim">
-                            <div class="progress-bar" id="cpu-bar" style="width: 0%; background-color: var(--purple-vps)"></div>
-                        </div>
-                    </div>
-
-                    <div class="col-md-3">
-                        <div class="d-flex justify-content-between small text-secondary">
-                            <span>RAM (8GB)</span>
-                            <span id="ram-val">--</span>
-                        </div>
-                        <div class="progress-slim">
-                            <div class="progress-bar bg-warning" id="ram-bar" style="width: 0%"></div>
-                        </div>
-                    </div>
-
-                    <div class="col-md-3">
-                        <div class="d-flex justify-content-between small text-secondary">
-                            <span>Disk IO</span>
-                            <span id="disk-io">--</span>
-                        </div>
-                        <div class="progress-slim">
-                            <div class="progress-bar bg-success" id="disk-bar" style="width: 5%"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="col-md-2 text-end text-secondary small">
-                        AWS Tokyo (ap-northeast-1)
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
+  </section>
 </div>
 
 <script>
-    // --- 1) Chart init ---
-    const ctx = document.getElementById('mainChart').getContext('2d');
-    const priceData = Array(60).fill(null);
-    const smaData = Array(60).fill(null);
-    const labels = Array(60).fill('');
-
-    const chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels,
-            datasets: [
-                { label: 'Price', data: priceData, borderColor: '#fff', borderWidth: 2, pointRadius: 0, tension: 0.1 },
-                { label: 'SMA (Stop)', data: smaData, borderColor: '#F59E0B', borderDash: [5, 5], borderWidth: 1.5, pointRadius: 0 }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                x: { display: false },
-                y: { grid: { color: '#334155' }, ticks: { color: '#94A3B8' } }
-            },
-            animation: false
-        }
-    });
-
-    // --- 2) WS client ---
-    let ws = null;
-    let wsBackoff = 500;
-    let isRunning = true;
-    let settingsCache = null;
-
-    function wsUrl() {
-        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        return `${proto}://${location.host}/ws`;
-    }
-
-    function connectWs() {
-        ws = new WebSocket(wsUrl());
-
-        ws.onopen = () => {
-            wsBackoff = 500;
-            log('[WS] 连接成功', 'success');
-        };
-
-        ws.onmessage = (ev) => {
-            try {
-                const data = JSON.parse(ev.data);
-                applyData(data);
-            } catch (e) {
-                // ignore
-            }
-        };
-
-        ws.onclose = () => {
-            log('[WS] 连接断开，正在重连...', 'warn');
-            setTimeout(connectWs, wsBackoff);
-            wsBackoff = Math.min(wsBackoff * 2, 8000);
-        };
-
-        ws.onerror = () => {
-            // close will trigger reconnect
-            try { ws.close(); } catch (e) {}
-        };
-    }
-
-    async function reloadSettings() {
-        try {
-            const resp = await fetch('/api/settings');
-            const js = await resp.json();
-            if (!resp.ok) {
-                log(`[CFG] 读取设置失败: ${js.detail || resp.status}`, 'error');
-                return;
-            }
-            settingsCache = js;
-            if (typeof js.running === 'boolean') setRunning(js.running);
-
-            const modeEl = document.getElementById('cfg-rank-mode');
-            if (modeEl) {
-                modeEl.onchange = () => reloadRankings(true);
-            }
-            await reloadRankings(false);
-        } catch (e) {
-            log('[CFG] 读取设置失败', 'error');
-        }
-    }
-
-    async function reloadRankings(forceSelectFirst) {
-        const prim = document.getElementById('cfg-primary');
-        const modeEl = document.getElementById('cfg-rank-mode');
-        const kind = (modeEl && modeEl.value) ? modeEl.value : 'gainers';
-
-        let items = [];
-        try {
-            const resp = await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);
-            const js = await resp.json();
-            if (!resp.ok) throw new Error(js.detail || `HTTP ${resp.status}`);
-            items = js.items || [];
-        } catch (e) {
-            // fallback: use configured symbols without ranking
-            const symbols = Object.keys((settingsCache && settingsCache.symbols) || {});
-            items = symbols.map(s => ({ symbol: s, change_pct: 0 }));
-        }
-
-        prim.innerHTML = '';
-        for (const it of items) {
-            const sym = it.symbol;
-            const pct = Number(it.change_pct);
-            const pctTxt = isFinite(pct) ? ((pct >= 0 ? '+' : '') + pct.toFixed(2) + '%') : '--';
-            const opt = document.createElement('option');
-            opt.value = sym;
-            opt.textContent = `${sym} (${pctTxt})`;
-            prim.appendChild(opt);
-        }
-
-        let selected = null;
-        if (!forceSelectFirst && settingsCache && settingsCache.primary_symbol) {
-            const p = settingsCache.primary_symbol;
-            if (items.some(x => x.symbol === p)) selected = p;
-        }
-        if (!selected && items.length > 0) selected = items[0].symbol;
-        if (selected) prim.value = selected;
-
-        prim.onchange = () => fillSymbolFields(prim.value);
-        fillSymbolFields(prim.value);
-    }
-
-    function fillSymbolFields(symbol) {
-        if (!settingsCache) return;
-        const defaults = settingsCache.defaults || { enabled: true, notional_usdt: '', leverage: '' };
-        const symMap = settingsCache.symbols || {};
-        const s = symMap[symbol] || defaults;
-
-        document.getElementById('cfg-enabled').checked = !!s.enabled;
-        document.getElementById('cfg-notional').value = (s.notional_usdt != null) ? s.notional_usdt : (defaults.notional_usdt != null ? defaults.notional_usdt : '');
-        document.getElementById('cfg-leverage').value = (s.leverage != null) ? s.leverage : (defaults.leverage != null ? defaults.leverage : '');
-    }
-
-    async function applySettings() {
-        const sym = document.getElementById('cfg-primary').value;
-        const primary = sym;
-        const enabled = document.getElementById('cfg-enabled').checked;
-        const notional = Number(document.getElementById('cfg-notional').value);
-        const leverage = Number(document.getElementById('cfg-leverage').value);
-
-        if (!sym) return;
-        if (!Number.isFinite(notional) || notional <= 0) {
-            log('[CFG] 名义金额无效', 'warn');
-            return;
-        }
-        if (!Number.isFinite(leverage) || leverage < 1 || leverage > 125) {
-            log('[CFG] 杠杆无效', 'warn');
-            return;
-        }
-
-        const payload = {
-            primary_symbol: primary,
-            symbols: {
-                [sym]: { enabled, notional_usdt: notional, leverage }
-            }
-        };
-
-        try {
-            const resp = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const js = await resp.json();
-            if (!resp.ok) {
-                log(`[CFG] 应用失败: ${js.detail || resp.status}`, 'error');
-                return;
-            }
-            settingsCache = js;
-            log(`[CFG] 已应用: ${sym} notional=${notional} lev=${leverage} enabled=${enabled}`, 'success');
-            fillSymbolFields(sym);
-        } catch (e) {
-            log('[CFG] 应用失败', 'error');
-        }
-    }
-
-    // --- 3) Toggle control ---
-    async function toggleBot() {
-        try {
-            const resp = await fetch('/api/toggle', { method: 'POST' });
-            const js = await resp.json();
-            if (typeof js.running === 'boolean') setRunning(js.running);
-            log(`[CMD] 用户切换策略: ${js.running ? 'RUNNING' : 'PAUSED'}`, 'info');
-        } catch (e) {
-            log('[CMD] toggle 失败', 'error');
-        }
-    }
-
-    function setRunning(running) {
-        isRunning = running;
-        const btn = document.getElementById('bot-toggle');
-        const txt = document.getElementById('bot-state-text');
-        if (running) {
-            btn.className = 'btn-control active';
-            txt.innerText = '系统运行中';
-        } else {
-            btn.className = 'btn-control stopped';
-            txt.innerText = '已停止 / 不开新仓';
-        }
-    }
-
-    // --- 4) UI update from backend payload ---
-    function applyData(d) {
-        // system clock / uptime
-        document.getElementById('sys-clock').innerText = new Date().toLocaleTimeString();
-        document.getElementById('uptime').innerText = formatUptime(d.uptime_s || 0);
-
-        // running state
-        if (typeof d.running === 'boolean') setRunning(d.running);
-
-        // api latency
-        const lat = d.api_latency_ms;
-        document.getElementById('api-latency').innerText = (lat == null) ? '--' : `${lat}ms`;
-
-        // account
-        if (d.account) {
-            if (d.account.equity != null) document.getElementById('total-equity').innerText = fmtMoney(d.account.equity);
-            if (d.account.available != null) document.getElementById('available-balance').innerText = fmtMoney(d.account.available);
-            if (d.account.used_ratio_pct != null) document.getElementById('used-ratio').innerText = `${d.account.used_ratio_pct.toFixed(1)}%`;
-        }
-
-        // pnl cards
-        if (d.pnl) {
-            formatPnL(document.getElementById('unrealized-pnl'), d.pnl.unrealized, 'card-unrealized');
-            formatPnL(document.getElementById('daily-pnl'), d.pnl.daily_realized, 'card-daily');
-            formatPnL(document.getElementById('total-pnl'), d.pnl.total_realized, 'card-total');
-
-            const y = d.pnl.yield_pct;
-            const elYield = document.getElementById('yield-val');
-            if (y == null) {
-                elYield.innerText = '--';
-            } else {
-                elYield.innerText = (y >= 0 ? '+' : '') + y.toFixed(2) + '%';
-                elYield.className = y >= 0 ? 'text-success fw-bold' : 'text-danger fw-bold';
-            }
-
-            const roe = d.pnl.roe_pct;
-            const elRoe = document.getElementById('roe-val');
-            if (roe == null) {
-                elRoe.innerText = '--';
-                elRoe.className = 'badge-soft-green';
-            } else {
-                elRoe.innerText = (roe >= 0 ? '+' : '') + roe.toFixed(2) + '%';
-                elRoe.className = roe >= 0 ? 'badge-soft-green' : 'badge-soft-red';
-            }
-        }
-
-        // position block
-        if (d.position) {
-            const badge = document.getElementById('pos-badge');
-            if (d.position.side === 'LONG') {
-                badge.innerText = 'LONG 🟢';
-                badge.className = 'badge bg-success p-2 fs-6';
-            } else if (d.position.side === 'SHORT') {
-                badge.innerText = 'SHORT 🔴';
-                badge.className = 'badge bg-danger p-2 fs-6';
-            } else {
-                badge.innerText = 'FLAT ⚪';
-                badge.className = 'badge bg-secondary p-2 fs-6';
-            }
-
-            const amt = d.position.amt != null ? d.position.amt : 0;
-            const sym = d.symbol || '';
-            const base = sym.endsWith('USDT') ? sym.slice(0, -4) : sym;
-            document.getElementById('pos-size').innerText = `${amt.toFixed(3)} ${base}`;
-
-            if (d.position.entry_price != null) document.getElementById('entry-price').innerText = fmtMoney(d.position.entry_price);
-            if (d.position.liq_price != null) document.getElementById('liq-price').innerText = fmtMoney(d.position.liq_price);
-
-            const stop = d.position.stop || {};
-            document.getElementById('stop-status').innerText = stop.active ? 'ACTIVE' : 'NONE';
-        }
-
-        // signal / sma / dist
-        if (d.sma != null) document.getElementById('sma-price').innerText = fmtMoney(d.sma);
-        if (d.dist_pct != null) {
-            document.getElementById('dist-percent').innerText = d.dist_pct.toFixed(3) + '%';
-            let barW = 100 - (d.dist_pct * 100);
-            if (barW < 5) barW = 5;
-            if (barW > 100) barW = 100;
-            document.getElementById('dist-bar').style.width = barW + '%';
-        }
-
-        // vps
-        if (d.vps) {
-            const cpu = d.vps.cpu_pct;
-            const ram = d.vps.ram_pct;
-            if (cpu != null) {
-                document.getElementById('cpu-val').innerText = cpu.toFixed(0) + '%';
-                document.getElementById('cpu-bar').style.width = cpu + '%';
-            }
-            if (ram != null) {
-                document.getElementById('ram-val').innerText = ram.toFixed(0) + '%';
-                document.getElementById('ram-bar').style.width = ram + '%';
-            }
-
-            const rb = d.vps.disk_read_bps;
-            const wb = d.vps.disk_write_bps;
-            if (rb != null && wb != null) {
-                document.getElementById('disk-io').innerText = `R ${fmtBps(rb)} / W ${fmtBps(wb)}`;
-                const lvl = Math.min(100, Math.max(0, (rb + wb) / (50 * 1024 * 1024) * 100)); // 50MB/s -> 100%
-                document.getElementById('disk-bar').style.width = Math.max(5, lvl).toFixed(0) + '%';
-            }
-        }
-
-        // chart
-        if (d.price != null) {
-            priceData.shift(); priceData.push(d.price);
-        }
-        if (d.sma != null) {
-            smaData.shift(); smaData.push(d.sma);
-        }
-        chart.update();
-    }
-
-    // --- helpers ---
-    function fmtMoney(v) {
-        return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    function fmtBps(v) {
-        const n = Number(v);
-        if (!isFinite(n)) return '--';
-        const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-        let x = n;
-        let i = 0;
-        while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }
-        return x.toFixed(i === 0 ? 0 : 1) + units[i];
-    }
-
-    function formatPnL(el, v, cardId) {
-        if (v == null) {
-            el.innerText = '--';
-            el.className = 'card-value';
-            return;
-        }
-        el.innerText = (v >= 0 ? '+' : '') + Number(v).toFixed(2);
-        el.className = `card-value ${v >= 0 ? 'trend-up' : 'trend-down'}`;
-        const card = document.getElementById(cardId);
-        if (card) card.className = `stat-card ${v >= 0 ? 'card-profit' : 'card-loss'}`;
-    }
-
-    function formatUptime(sec) {
-        const s = Math.max(0, Number(sec) || 0);
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        return `${h}h ${m}m`;
-    }
-
-    function log(msg, type='info') {
-        const box = document.getElementById('sys-log');
-        const div = document.createElement('div');
-        div.className = 'log-entry';
-        
-        let color = 'text-light';
-        if (type==='success') color = 'text-success';
-        if (type==='error') color = 'text-danger';
-        if (type==='warn') color = 'text-warning';
-        if (type==='info') color = 'text-info';
-        
-        div.innerHTML = `<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${color}">${msg}</span>`;
-        box.insertBefore(div, box.firstChild);
-        // Keep log box bounded
-        while (box.children.length > 200) box.removeChild(box.lastChild);
-    }
-
-    function clearLogs() {
-        document.getElementById('sys-log').innerHTML = '';
-    }
-
-    connectWs();
-    reloadSettings();
+const ctx=document.getElementById('mainChart').getContext('2d');
+const priceData=Array(120).fill(null),smaData=Array(120).fill(null),labels=Array(120).fill('');
+const chart=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Price',data:priceData,borderColor:'#f3ba2f',backgroundColor:'rgba(243,186,47,.12)',borderWidth:2,pointRadius:0,fill:true,tension:.15},{label:'SMA',data:smaData,borderColor:'#53d2ff',borderWidth:1.5,pointRadius:0,borderDash:[6,6],tension:.08}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'rgba(156,176,205,.13)'},ticks:{color:'#96abcd',font:{family:'JetBrains Mono'},callback:(v)=>fmtPrice(v)}}},animation:false}});
+let ws=null,wsBackoff=500,settingsCache=null;
+const $=(id)=>document.getElementById(id);
+const wsUrl=()=>`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`;
+function connectWs(){ws=new WebSocket(wsUrl());ws.onopen=()=>{wsBackoff=500;log('[WS] 连接成功','success')};ws.onmessage=(e)=>{try{applyData(JSON.parse(e.data))}catch(_){}};ws.onclose=()=>{log('[WS] 连接断开，正在重连...','warn');setTimeout(connectWs,wsBackoff);wsBackoff=Math.min(wsBackoff*2,8000)};ws.onerror=()=>{try{ws.close()}catch(_){}}}
+async function reloadSettings(){try{const r=await fetch('/api/settings');const j=await r.json();if(!r.ok){log(`[CFG] 读取设置失败: ${j.detail||r.status}`,'error');return}settingsCache=j;if(typeof j.running==='boolean')setRunning(j.running);$('cfg-rank-mode').onchange=()=>reloadRankings(true);await reloadRankings(false)}catch(_){log('[CFG] 读取设置失败','error')}}
+async function reloadRankings(force){const kind=$('cfg-rank-mode').value||'gainers';let items=[];try{const r=await fetch(`/api/rankings?kind=${encodeURIComponent(kind)}&limit=5&universe=all&quote=USDT&perpetual_only=true`);const j=await r.json();if(!r.ok)throw new Error();items=j.items||[]}catch(_){items=Object.keys((settingsCache&&settingsCache.symbols)||{}).map(s=>({symbol:s,change_pct:0}))}
+const prim=$('cfg-primary');prim.innerHTML='';for(const it of items){const pct=Number(it.change_pct);const opt=document.createElement('option');opt.value=it.symbol;opt.textContent=`${it.symbol} (${isFinite(pct)?((pct>=0?'+':'')+pct.toFixed(2)+'%'):'--'})`;prim.appendChild(opt)}
+let selected=null;if(!force&&settingsCache&&settingsCache.primary_symbol&&items.some(x=>x.symbol===settingsCache.primary_symbol))selected=settingsCache.primary_symbol;if(!selected&&items.length)selected=items[0].symbol;if(selected)prim.value=selected;prim.onchange=()=>fillSymbolFields(prim.value);fillSymbolFields(prim.value)}
+function fillSymbolFields(sym){if(!settingsCache)return;const d=settingsCache.defaults||{enabled:true,notional_usdt:'',leverage:''};const s=(settingsCache.symbols||{})[sym]||d;$('cfg-enabled').checked=!!s.enabled;$('cfg-notional').value=s.notional_usdt??d.notional_usdt??'';$('cfg-leverage').value=s.leverage??d.leverage??''}
+async function applySettings(){const sym=$('cfg-primary').value,enabled=$('cfg-enabled').checked,notional=Number($('cfg-notional').value),leverage=Number($('cfg-leverage').value);if(!sym)return;if(!Number.isFinite(notional)||notional<=0){log('[CFG] 名义金额无效','warn');return}if(!Number.isFinite(leverage)||leverage<1||leverage>125){log('[CFG] 杠杆无效','warn');return}
+try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({primary_symbol:sym,symbols:{[sym]:{enabled,notional_usdt:notional,leverage}}})});const j=await r.json();if(!r.ok){log(`[CFG] 应用失败: ${j.detail||r.status}`,'error');return}settingsCache=j;log(`[CFG] 已应用: ${sym} notional=${notional} lev=${leverage} enabled=${enabled}`,'success');fillSymbolFields(sym)}catch(_){log('[CFG] 应用失败','error')}}
+async function toggleBot(){try{const r=await fetch('/api/toggle',{method:'POST'});const j=await r.json();if(typeof j.running==='boolean')setRunning(j.running);log(`[CMD] 用户切换策略: ${j.running?'RUNNING':'PAUSED'}`,'info')}catch(_){log('[CMD] toggle 失败','error')}}
+function setRunning(r){const btn=$('bot-toggle'),txt=$('bot-state-text');if(r){btn.className='btn-control active';txt.innerText='系统运行中';$('strategy-state').textContent='RUNNING';$('strategy-state').className='trend-up'}else{btn.className='btn-control stopped';txt.innerText='已停止 / 不开新仓';$('strategy-state').textContent='PAUSED';$('strategy-state').className='trend-down'}}
+function applyData(d){$('sys-clock').innerText=new Date().toLocaleTimeString();$('uptime').innerText=formatUptime(d.uptime_s||0);if(typeof d.running==='boolean')setRunning(d.running);$('api-latency').innerText=d.api_latency_ms==null?'--':`${d.api_latency_ms}ms`;if(d.symbol)$('symbol-ticker').innerText=d.symbol;
+if(d.account){if(d.account.equity!=null)$('total-equity').innerText=fmtMoney(d.account.equity);if(d.account.available!=null)$('available-balance').innerText=fmtMoney(d.account.available);if(d.account.used_ratio_pct!=null)$('used-ratio').innerText=`${d.account.used_ratio_pct.toFixed(1)}%`}
+if(d.pnl){formatPnL($('unrealized-pnl'),d.pnl.unrealized,'card-unrealized');formatPnL($('daily-pnl'),d.pnl.daily_realized,'card-daily');formatPnL($('total-pnl'),d.pnl.total_realized,'card-total');$('yield-val').innerText=d.pnl.yield_pct==null?'--':`${d.pnl.yield_pct>=0?'+':''}${d.pnl.yield_pct.toFixed(2)}%`;$('yield-val').className=d.pnl.yield_pct>=0?'trend-up':'trend-down';$('roe-val').innerText=d.pnl.roe_pct==null?'--':`${d.pnl.roe_pct>=0?'+':''}${d.pnl.roe_pct.toFixed(2)}%`;$('roe-val').className=d.pnl.roe_pct>=0?'trend-up':'trend-down'}
+if(d.position){const p=d.position,paused=!!p.paused,badge=$('pos-badge');if(paused){badge.textContent='PAUSED ⏸';badge.style.background='rgba(243,186,47,.85)';badge.style.color='#111'}else if(p.side==='LONG'){badge.textContent='LONG 🟢';badge.style.background='rgba(14,203,129,.15)';badge.style.color='var(--g)'}else if(p.side==='SHORT'){badge.textContent='SHORT 🔴';badge.style.background='rgba(246,70,93,.15)';badge.style.color='var(--r)'}else{badge.textContent='FLAT ⚪';badge.style.background='rgba(156,176,205,.15)';badge.style.color='var(--txt)'}
+const base=(d.symbol||'').endsWith('USDT')?(d.symbol||'').slice(0,-4):(d.symbol||'');$('pos-size').innerText=`${Number(p.amt||0).toFixed(3)} ${base}`;$('entry-price').innerText=p.entry_price!=null?fmtPrice(p.entry_price):'--';$('liq-price').innerText=p.liq_price!=null?fmtPrice(p.liq_price):'--';$('position-leverage').innerText=p.leverage!=null?`${p.leverage}x`:'--';$('position-margin-type').innerText=p.margin_type||'--';$('position-notional').innerText=p.notional!=null?`${fmtCompact(p.notional)} USDT`:'--';if(p.symbol_unrealized!=null){const v=Number(p.symbol_unrealized);$('position-symbol-pnl').innerText=`${v>=0?'+':''}${v.toFixed(2)} USDT`;$('position-symbol-pnl').className=v>=0?'trend-up':'trend-down'}else{$('position-symbol-pnl').innerText='--';$('position-symbol-pnl').className=''}
+if(paused){$('stop-status').innerText='PAUSED';$('stop-status').className='trend-down';if(p.pause_reason)$('cfg-hint').innerText=`策略暂停: ${p.pause_reason}`}else{$('stop-status').innerText=(p.stop&&p.stop.active)?(p.stop.mode||'ACTIVE'):'NONE';$('stop-status').className=(p.stop&&p.stop.active)?'trend-up':''}}
+if(d.market){const m=d.market;$('contract-type').innerText=m.contract_type||'--';$('symbol-status').innerText=m.symbol_status||'--';$('mark-price').innerText=m.mark_price!=null?fmtPrice(m.mark_price):'--';$('index-price').innerText=m.index_price!=null?fmtPrice(m.index_price):'--';$('estimated-settle-price').innerText=m.estimated_settle_price!=null?fmtPrice(m.estimated_settle_price):'--';$('high-24h').innerText=m.high_24h!=null?fmtPrice(m.high_24h):'--';$('low-24h').innerText=m.low_24h!=null?fmtPrice(m.low_24h):'--';$('volume-24h').innerText=m.volume_24h!=null?fmtCompact(m.volume_24h):'--';$('quote-volume-24h').innerText=m.quote_volume_24h!=null?`${fmtCompact(m.quote_volume_24h)} USDT`:'--';$('open-interest').innerText=m.open_interest!=null?fmtCompact(m.open_interest):'--';$('open-interest-usdt').innerText=m.open_interest_usdt!=null?`${fmtCompact(m.open_interest_usdt)} USDT`:'--';$('weighted-avg-price').innerText=m.weighted_avg_price_24h!=null?fmtPrice(m.weighted_avg_price_24h):'--';$('basis-price').innerText=m.price_basis!=null?fmtPriceSigned(m.price_basis):'--';$('spread-bps').innerText=m.spread_bps!=null?`${Number(m.spread_bps).toFixed(2)} bps`:'--';
+const fr=Number(m.funding_rate_pct);if(Number.isFinite(fr)){$('funding-rate').innerText=`${fr>=0?'+':''}${fr.toFixed(4)}%`;$('funding-rate').className=fr>=0?'v trend-up':'v trend-down'}else{$('funding-rate').innerText='--';$('funding-rate').className='v'}
+const ch=Number(m.change_24h_pct);if(Number.isFinite(ch)){$('change-24h').innerText=`${ch>=0?'+':''}${ch.toFixed(2)}%`;$('change-24h').className=ch>=0?'trend-up':'trend-down'}else{$('change-24h').innerText='--';$('change-24h').className=''}$('next-funding').innerText=fmtCountdown(m.next_funding_countdown_s)}
+if(d.price!=null){$('last-price').innerText=fmtPrice(d.price);$('chart-last-price').innerText=fmtPrice(d.price);priceData.shift();priceData.push(Number(d.price))}
+if(d.sma!=null){$('sma-price').innerText=fmtPrice(d.sma);smaData.shift();smaData.push(Number(d.sma))}
+if(d.dist_pct!=null){$('dist-percent').innerText=`${Number(d.dist_pct).toFixed(3)}%`;let w=100-(Number(d.dist_pct)*100);w=Math.max(5,Math.min(100,w));$('dist-bar').style.width=`${w}%`}
+if(d.vps){if(d.vps.cpu_pct!=null){$('cpu-val').innerText=`${Number(d.vps.cpu_pct).toFixed(0)}%`;$('cpu-bar').style.width=`${d.vps.cpu_pct}%`}if(d.vps.ram_pct!=null){$('ram-val').innerText=`${Number(d.vps.ram_pct).toFixed(0)}%`;$('ram-bar').style.width=`${d.vps.ram_pct}%`}if(d.vps.disk_read_bps!=null&&d.vps.disk_write_bps!=null){$('disk-io').innerText=`R ${fmtBps(d.vps.disk_read_bps)} / W ${fmtBps(d.vps.disk_write_bps)}`;const lvl=Math.min(100,Math.max(0,((Number(d.vps.disk_read_bps)+Number(d.vps.disk_write_bps))/(50*1024*1024)*100)));$('disk-bar').style.width=`${Math.max(5,lvl).toFixed(0)}%`}}
+chart.update('none')}
+function fmtMoney(v){const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--'}
+function fmtPrice(v){const n=Number(v);if(!Number.isFinite(n))return'--';const a=Math.abs(n);let d=2;if(a<1)d=5;else if(a<100)d=4;else if(a<1000)d=3;return n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function fmtPriceSigned(v){const n=Number(v);if(!Number.isFinite(n))return'--';return`${n>=0?'+':'-'}${fmtPrice(Math.abs(n))}`}
+function fmtCompact(v){const n=Number(v);return Number.isFinite(n)?new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(n):'--'}
+function fmtBps(v){let n=Number(v);if(!Number.isFinite(n))return'--';const u=['B/s','KB/s','MB/s','GB/s'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return`${n.toFixed(i===0?0:1)}${u[i]}`}
+function fmtCountdown(s){s=Number(s);if(!Number.isFinite(s)||s<=0)return'--';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return`${h}h ${m}m`}
+function formatPnL(el,v,id){if(v==null){el.innerText='--';el.className='v';return}const n=Number(v);el.innerText=`${n>=0?'+':''}${n.toFixed(2)}`;el.className=`v ${n>=0?'trend-up':'trend-down'}`;const c=$(id);if(c)c.style.borderColor=n>=0?'rgba(14,203,129,.35)':'rgba(246,70,93,.35)'}
+function formatUptime(s){s=Math.max(0,Number(s)||0);return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`}
+function log(msg,type='info'){const b=$('sys-log'),d=document.createElement('div');let c='text-light';if(type==='success')c='text-success';if(type==='error')c='text-danger';if(type==='warn')c='text-warning';if(type==='info')c='text-info';d.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${c}">${msg}</span>`;b.insertBefore(d,b.firstChild);while(b.children.length>240)b.removeChild(b.lastChild)}
+function clearLogs(){$('sys-log').innerHTML=''}
+connectWs();reloadSettings();
 </script>
 </body>
 </html>

@@ -114,6 +114,9 @@ class ExecutionManager(threading.Thread):
         except (ClientError, ServerError) as e:
             self._log.warning("account() failed: %s", getattr(e, "error_message", e))
             return None
+        except Exception as e:
+            self._log.warning("account() unexpected error: %s", e)
+            return None
 
         if "availableBalance" in acct:
             return d(acct.get("availableBalance", "0"))
@@ -143,6 +146,86 @@ class ExecutionManager(threading.Thread):
             pass
         return fallback
 
+    def _max_qty(self, filters) -> Decimal | None:
+        max_qty = getattr(filters, "max_qty", None)
+        if max_qty is None or max_qty <= DECIMAL_0:
+            return None
+        max_qty = floor_to_step(max_qty, filters.step_size)
+        return max_qty if max_qty > DECIMAL_0 else None
+
+    def _cap_qty_to_max(self, symbol: str, qty: Decimal, *, filters, context: str) -> Decimal:
+        out = floor_to_step(qty, filters.step_size)
+        max_qty = self._max_qty(filters)
+        if max_qty is not None and out > max_qty:
+            self._log.warning("%s %s qty=%s > maxQty=%s; cap to maxQty", symbol, context, out, max_qty)
+            out = max_qty
+        return out
+
+    def _split_qty_by_max(self, qty: Decimal, *, filters) -> list[Decimal]:
+        """
+        Split quantity into chunks that respect maxQty. All chunks are step-rounded.
+        """
+        total = floor_to_step(qty, filters.step_size)
+        if total < filters.min_qty:
+            return []
+
+        max_qty = self._max_qty(filters)
+        if max_qty is None or total <= max_qty:
+            return [total]
+
+        chunks: list[Decimal] = []
+        remain = total
+        while remain > DECIMAL_0:
+            chunk = max_qty if remain > max_qty else remain
+            chunk = floor_to_step(chunk, filters.step_size)
+            if chunk <= DECIMAL_0:
+                break
+            if chunk < filters.min_qty:
+                # Try to merge tail into previous chunk if it still stays <= maxQty.
+                if chunks:
+                    merged = floor_to_step(chunks[-1] + remain, filters.step_size)
+                    if merged >= filters.min_qty and merged <= max_qty:
+                        chunks[-1] = merged
+                break
+            chunks.append(chunk)
+            new_remain = floor_to_step(remain - chunk, filters.step_size)
+            if new_remain >= remain:
+                break
+            remain = new_remain
+        return [c for c in chunks if c >= filters.min_qty]
+
+    def _place_market_order_chunks(
+        self,
+        symbol: str,
+        *,
+        side: str,
+        qty: Decimal,
+        filters,
+        reduce_only: bool,
+        protective_ok: bool,
+        cid_tag: str,
+    ) -> None:
+        chunks = self._split_qty_by_max(qty, filters=filters)
+        if not chunks:
+            raise ValueError(f"{symbol} qty={qty} is below minQty after step rounding")
+        if len(chunks) > 1:
+            self._log.warning("%s %s split into %s chunks due to maxQty", symbol, cid_tag, len(chunks))
+        for idx, chunk in enumerate(chunks, start=1):
+            cid = self._client_order_id(symbol, f"{cid_tag}{idx}")
+            params: dict[str, Any] = {
+                "quantity": to_str(chunk),
+                "newClientOrderId": cid,
+            }
+            if reduce_only:
+                params["reduceOnly"] = "true"
+            self._new_order_safe(
+                symbol,
+                side=side,
+                order_type="MARKET",
+                protective_ok=protective_ok,
+                **params,
+            )
+
     def _market_close_only(self, symbol: str) -> None:
         if self._is_paused(symbol):
             return
@@ -155,28 +238,39 @@ class ExecutionManager(threading.Thread):
         qty = floor_to_step(abs(pos_amt), filters.step_size)
         if qty < filters.min_qty:
             self._log.error("%s market_close_only qty %s < minQty %s", symbol, qty, filters.min_qty)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="market_close_qty_below_min")
             return
         close_side = "SELL" if pos_amt > 0 else "BUY"
-        cid = self._client_order_id(symbol, "CLOSE")
         self._log.warning("%s MARKET_CLOSE_ONLY side=%s qty=%s (pos=%s)", symbol, close_side, qty, pos_amt)
         try:
-            self._new_order_safe(
+            self._place_market_order_chunks(
                 symbol,
                 side=close_side,
-                order_type="MARKET",
+                qty=qty,
+                filters=filters,
+                reduce_only=True,
                 protective_ok=True,
-                quantity=to_str(qty),
-                reduceOnly="true",
-                newClientOrderId=cid,
+                cid_tag="CLOSE",
             )
         except ClientError as e:
             self._log.error("%s market_close_only failed: %s (%s)", symbol, e.error_message, e.error_code)
             return
+        except ValueError as e:
+            self._log.error("%s market_close_only failed: %s", symbol, e)
+            return
         self._sync_position_amt(symbol)
 
     def _sync_position_amt(self, symbol: str) -> Decimal:
-        risks = self._svc.get_position_risk(symbol=symbol)
+        try:
+            risks = self._svc.get_position_risk(symbol=symbol)
+        except (ClientError, ServerError) as e:
+            self._log.warning("get_position_risk failed %s: %s", symbol, getattr(e, "error_message", e))
+            with self._state.lock:
+                return self._state.get(symbol).position_amt
+        except Exception as e:
+            self._log.warning("get_position_risk unexpected error %s: %s", symbol, e)
+            with self._state.lock:
+                return self._state.get(symbol).position_amt
         if not risks:
             amt = DECIMAL_0
         else:
@@ -197,6 +291,8 @@ class ExecutionManager(threading.Thread):
             self._log.warning("cancel_order failed %s: %s (%s)", symbol, e.error_message, e.error_code)
         except ServerError as e:
             self._log.warning("cancel_order server error %s: %s", symbol, e)
+        except Exception as e:
+            self._log.warning("cancel_order unexpected error %s: %s", symbol, e)
 
     def _new_order_safe(self, symbol: str, side: str, order_type: str, *, protective_ok: bool = False, **kwargs) -> dict[str, Any] | None:
         if self._rt.is_running():
@@ -231,6 +327,19 @@ class ExecutionManager(threading.Thread):
                 backoff = self._cfg.order_retry_backoff_s * (2 ** (attempt - 1))
                 self._log.warning("ServerError placing order %s (attempt %s/%s): %s; sleep %.2fs",
                                   symbol, attempt, self._cfg.order_retry_max_attempts, e, backoff)
+                time.sleep(backoff)
+            except Exception as e:
+                if attempt >= self._cfg.order_retry_max_attempts:
+                    raise
+                backoff = self._cfg.order_retry_backoff_s * (2 ** (attempt - 1))
+                self._log.warning(
+                    "Unexpected error placing order %s (attempt %s/%s): %s; sleep %.2fs",
+                    symbol,
+                    attempt,
+                    self._cfg.order_retry_max_attempts,
+                    e,
+                    backoff,
+                )
                 time.sleep(backoff)
         return None
 
@@ -271,6 +380,9 @@ class ExecutionManager(threading.Thread):
         except (ClientError, ServerError) as e:
             self._log.warning("get_open_orders failed %s: %s", symbol, getattr(e, "error_message", e))
             return
+        except Exception as e:
+            self._log.warning("get_open_orders unexpected error %s: %s", symbol, e)
+            return
         for o in orders:
             cid = str(o.get("clientOrderId", ""))
             if cid.startswith(prefix):
@@ -301,17 +413,17 @@ class ExecutionManager(threading.Thread):
             return
         if symcfg.notional_usdt <= 0:
             self._log.error("%s notional_usdt must be >0", symbol)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="invalid_notional")
             return
 
         side: Side = "LONG" if last_close >= sma else "SHORT"
         order_side = "BUY" if side == "LONG" else "SELL"
 
         qty = symcfg.notional_usdt / last_close
-        qty = floor_to_step(qty, filters.step_size)
+        qty = self._cap_qty_to_max(symbol, qty, filters=filters, context="open_initial")
         if qty < filters.min_qty:
             self._log.error("%s computed qty %s < minQty %s", symbol, qty, filters.min_qty)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="open_initial_qty_below_min")
             return
 
         cid = self._client_order_id(symbol, f"OPEN-{side}")
@@ -329,8 +441,9 @@ class ExecutionManager(threading.Thread):
             self._log.error("%s open_initial failed: %s (%s)", symbol, e.error_message, e.error_code)
             # -1013: filter failure (invalid qty/precision)
             # -4140: symbol not tradable (e.g. SETTLING); stop retrying to avoid spam.
-            if e.error_code in (-1013, -4140):
-                self._state.set_paused(symbol, True)
+            # -4005: quantity over maxQty
+            if e.error_code in (-1013, -4140, -4005):
+                self._state.set_paused(symbol, True, reason=f"open_initial_api_error_{e.error_code}")
             return
 
         # sync position for subsequent stop sizing
@@ -402,8 +515,9 @@ class ExecutionManager(threading.Thread):
         flip_qty = floor_to_step(flip_qty, filters.step_size)
         if flip_qty < filters.min_qty:
             self._log.error("%s flip_qty %s < minQty %s", symbol, flip_qty, filters.min_qty)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="stop_flip_qty_below_min")
             return
+        max_qty = self._max_qty(filters)
 
         # Force CLOSE_ONLY in paused mode or disabled-symbol mode (no new positions).
         close_only = False
@@ -411,6 +525,14 @@ class ExecutionManager(threading.Thread):
             close_only = True
         if not symcfg.enabled:
             close_only = True
+        if max_qty is not None and flip_qty > max_qty:
+            close_only = True
+            self._log.warning(
+                "%s flip_qty %s > maxQty %s; downgrade STOP to CLOSE_ONLY",
+                symbol,
+                flip_qty,
+                max_qty,
+            )
         avail = self._available_balance_usdt()
         if avail is not None:
             est_notional = abs(pos_amt) * last_close
@@ -473,8 +595,12 @@ class ExecutionManager(threading.Thread):
                 else:
                     self._market_close_only(symbol)
                 return
-            if e.error_code == -2010 and not close_only:
-                self._log.warning("%s insufficient margin for FLIP stop -> retry CLOSE_ONLY", symbol)
+            if e.error_code in (-2010, -4005) and not close_only:
+                self._log.warning(
+                    "%s FLIP stop rejected (%s) -> retry CLOSE_ONLY",
+                    symbol,
+                    e.error_code,
+                )
                 # Retry as close-only
                 params.pop("quantity", None)
                 params["closePosition"] = "true"
@@ -487,7 +613,7 @@ class ExecutionManager(threading.Thread):
             else:
                 self._log.error("%s place stop failed: %s (%s)", symbol, e.error_message, e.error_code)
                 if e.error_code == -1013:
-                    self._state.set_paused(symbol, True)
+                    self._state.set_paused(symbol, True, reason="stop_api_error_-1013")
                 return
 
         if resp and "orderId" in resp:
@@ -516,9 +642,8 @@ class ExecutionManager(threading.Thread):
             st = self._state.get(symbol)
             filters = st.filters
             pos_amt = st.position_amt
-            last_close = st.last_close
             last_flip_ts = st.last_flip_ts
-        if filters is None or last_close is None or pos_amt == DECIMAL_0:
+        if filters is None or pos_amt == DECIMAL_0:
             return
 
         now = time.time()
@@ -533,10 +658,18 @@ class ExecutionManager(threading.Thread):
         qty = floor_to_step(qty, filters.step_size)
         if qty < filters.min_qty:
             self._log.error("%s market_flip qty %s < minQty %s", symbol, qty, filters.min_qty)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="market_flip_qty_below_min")
             return
 
         flip_qty = floor_to_step(qty * Decimal("2"), filters.step_size)
+        max_qty = self._max_qty(filters)
+        if max_qty is not None and flip_qty > max_qty:
+            self._log.warning("%s atomic flip qty %s > maxQty %s -> close then open", symbol, flip_qty, max_qty)
+            try:
+                self._market_close_then_open(symbol, qty)
+            except (ClientError, ValueError) as e:
+                self._log.error("%s close_then_open failed: %s", symbol, e)
+            return
         cid = self._client_order_id(symbol, "MFLIP")
 
         # Try atomic flip with a single MARKET order (qty*2). If insufficient margin, fallback to close then open.
@@ -551,41 +684,46 @@ class ExecutionManager(threading.Thread):
                 newClientOrderId=cid,
             )
         except ClientError as e:
-            if e.error_code == -2010:
-                self._log.warning("%s atomic flip rejected (-2010) -> close then open", symbol)
-                self._market_close_then_open(symbol, qty, last_close)
+            if e.error_code in (-2010, -4005):
+                self._log.warning("%s atomic flip rejected (%s) -> close then open", symbol, e.error_code)
+                try:
+                    self._market_close_then_open(symbol, qty)
+                except (ClientError, ValueError) as e2:
+                    self._log.error("%s close_then_open failed: %s", symbol, e2)
             else:
                 self._log.error("%s market_flip failed: %s (%s)", symbol, e.error_message, e.error_code)
                 if e.error_code == -1013:
-                    self._state.set_paused(symbol, True)
+                    self._state.set_paused(symbol, True, reason="market_flip_api_error_-1013")
                 return
 
         self._sync_position_amt(symbol)
         # After flip, rebuild stop immediately.
         self._update_stop(symbol)
 
-    def _market_close_then_open(self, symbol: str, qty: Decimal, last_close: Decimal) -> None:
+    def _market_close_then_open(self, symbol: str, qty: Decimal) -> None:
         if self._is_paused(symbol):
             return
         with self._state.lock:
-            pos_amt = self._state.get(symbol).position_amt
+            st = self._state.get(symbol)
+            pos_amt = st.position_amt
+            filters = st.filters
         if pos_amt == DECIMAL_0:
+            return
+        if filters is None:
             return
 
         close_side = "SELL" if pos_amt > 0 else "BUY"
         open_side = "BUY" if pos_amt > 0 else "SELL"
-        close_cid = self._client_order_id(symbol, "MCLOSE")
-        open_cid = self._client_order_id(symbol, "MOPEN")
 
         self._log.info("%s MARKET_CLOSE qty=%s", symbol, qty)
-        self._new_order_safe(
+        self._place_market_order_chunks(
             symbol,
             side=close_side,
-            order_type="MARKET",
+            qty=qty,
+            filters=filters,
+            reduce_only=True,
             protective_ok=True,
-            quantity=to_str(qty),
-            reduceOnly="true",
-            newClientOrderId=close_cid,
+            cid_tag="MCLOSE",
         )
         self._sync_position_amt(symbol)
 
@@ -593,13 +731,14 @@ class ExecutionManager(threading.Thread):
             return
 
         self._log.info("%s MARKET_OPEN opposite qty=%s", symbol, qty)
-        self._new_order_safe(
+        self._place_market_order_chunks(
             symbol,
             side=open_side,
-            order_type="MARKET",
+            qty=qty,
+            filters=filters,
+            reduce_only=False,
             protective_ok=False,
-            quantity=to_str(qty),
-            newClientOrderId=open_cid,
+            cid_tag="MOPEN",
         )
         self._sync_position_amt(symbol)
 
@@ -619,22 +758,25 @@ class ExecutionManager(threading.Thread):
         qty = floor_to_step(qty, filters.step_size)
         if qty < filters.min_qty:
             self._log.error("%s open_after_close qty %s < minQty %s", symbol, qty, filters.min_qty)
-            self._state.set_paused(symbol, True)
+            self._state.set_paused(symbol, True, reason="reopen_qty_below_min")
             return
         order_side = "BUY" if side == "LONG" else "SELL"
-        cid = self._client_order_id(symbol, f"REOPEN-{side}")
         self._log.info("%s REOPEN %s qty=%s", symbol, side, qty)
         try:
-            self._new_order_safe(
+            self._place_market_order_chunks(
                 symbol,
                 side=order_side,
-                order_type="MARKET",
+                qty=qty,
+                filters=filters,
+                reduce_only=False,
                 protective_ok=False,
-                quantity=to_str(qty),
-                newClientOrderId=cid,
+                cid_tag=f"REOPEN{side[0]}",
             )
         except ClientError as e:
             self._log.error("%s reopen failed: %s (%s)", symbol, e.error_message, e.error_code)
+            return
+        except ValueError as e:
+            self._log.error("%s reopen failed: %s", symbol, e)
             return
         self._sync_position_amt(symbol)
         self._update_stop(symbol)

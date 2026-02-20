@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -54,6 +55,7 @@ def parse_filters(exchange_info: dict, symbols: list[str]) -> dict[str, SymbolFi
         tick_size = None
         step_size = None
         min_qty = None
+        max_qty = None
         if isinstance(filters, list):
             for f in filters:
                 if not isinstance(f, dict):
@@ -64,16 +66,27 @@ def parse_filters(exchange_info: dict, symbols: list[str]) -> dict[str, SymbolFi
                 elif ft == "LOT_SIZE":
                     step_size = d(f.get("stepSize", "0"))
                     min_qty = d(f.get("minQty", "0"))
+                    mx = d(f.get("maxQty", "0"))
+                    if mx > 0:
+                        max_qty = mx if max_qty is None else min(max_qty, mx)
                 elif ft == "MARKET_LOT_SIZE":
                     ms = d(f.get("stepSize", "0"))
                     mq = d(f.get("minQty", "0"))
+                    mx = d(f.get("maxQty", "0"))
                     if step_size is None or ms > step_size:
                         step_size = ms
                     if min_qty is None or mq > min_qty:
                         min_qty = mq
+                    if mx > 0:
+                        max_qty = mx if max_qty is None else min(max_qty, mx)
         if not tick_size or not step_size or min_qty is None:
             continue
-        out[sym] = SymbolFilters(tick_size=tick_size, step_size=step_size, min_qty=min_qty)
+        out[sym] = SymbolFilters(
+            tick_size=tick_size,
+            step_size=step_size,
+            min_qty=min_qty,
+            max_qty=max_qty,
+        )
     return out
 
 
@@ -108,6 +121,7 @@ def init_positions(service: BinanceService, state: StateStore, symbols: list[str
 class MetricsCache:
     prices: dict[str, Decimal] = field(default_factory=dict)
     position_risk: dict[str, dict[str, Any]] = field(default_factory=dict)
+    market_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     wallet_balance: Decimal = Decimal("0")
     available_balance: Decimal = Decimal("0")
     unrealized_pnl: Decimal = Decimal("0")
@@ -440,6 +454,8 @@ async def build_dashboard_payload() -> dict[str, Any]:
         sma = st.sma
         pos_amt = st.position_amt
         entry_price = None
+        paused = st.paused
+        pause_reason = st.pause_reason
         stop_active = st.active_stop_order_id is not None
         stop_price = st.active_stop_price
         stop_mode = st.stop_mode
@@ -448,6 +464,8 @@ async def build_dashboard_payload() -> dict[str, Any]:
         cache = ctx.cache
         price = cache.prices.get(sym)
         pr = cache.position_risk.get(sym, {})
+        market_snap = cache.market_stats.get(sym, {})
+        symbol_meta = cache.exchange_symbols.get(sym, {})
         wallet = cache.wallet_balance
         avail = cache.available_balance
         unreal = cache.unrealized_pnl
@@ -499,6 +517,54 @@ async def build_dashboard_payload() -> dict[str, Any]:
     if margin_bal and margin_bal > 0:
         used_ratio = float(max(Decimal("0"), (margin_bal - avail) / margin_bal) * Decimal("100"))
 
+    mark_price = _safe_decimal_opt(market_snap.get("mark_price"))
+    index_price = _safe_decimal_opt(market_snap.get("index_price"))
+    funding_rate = _safe_decimal_opt(market_snap.get("funding_rate"))
+    change_24h_pct = _safe_decimal_opt(market_snap.get("change_24h_pct"))
+    high_24h = _safe_decimal_opt(market_snap.get("high_24h"))
+    low_24h = _safe_decimal_opt(market_snap.get("low_24h"))
+    volume_24h = _safe_decimal_opt(market_snap.get("volume_24h"))
+    quote_volume_24h = _safe_decimal_opt(market_snap.get("quote_volume_24h"))
+    weighted_avg_price_24h = _safe_decimal_opt(market_snap.get("weighted_avg_price_24h"))
+    open_interest = _safe_decimal_opt(market_snap.get("open_interest"))
+    estimated_settle_price = _safe_decimal_opt(market_snap.get("estimated_settle_price"))
+    next_funding_ms = market_snap.get("next_funding_time_ms")
+    if next_funding_ms is not None:
+        try:
+            next_funding_ms = int(next_funding_ms)
+        except Exception:
+            next_funding_ms = None
+    next_funding_countdown_s = None
+    if next_funding_ms is not None:
+        next_funding_countdown_s = max(0, int((next_funding_ms / 1000) - time.time()))
+
+    open_interest_usdt = None
+    oi_ref_price = mark_price or price
+    if open_interest is not None and oi_ref_price is not None:
+        open_interest_usdt = open_interest * oi_ref_price
+
+    price_basis = None
+    spread_bps = None
+    if mark_price is not None and price is not None and mark_price != 0:
+        price_basis = price - mark_price
+        spread_bps = (price_basis / mark_price) * Decimal("10000")
+
+    leverage_now = None
+    if "leverage" in pr:
+        try:
+            leverage_now = int(pr.get("leverage"))
+        except Exception:
+            leverage_now = None
+    margin_type = None
+    if "marginType" in pr:
+        try:
+            margin_type = str(pr.get("marginType", "")).upper()
+        except Exception:
+            margin_type = None
+    position_notional = _safe_decimal_opt(pr.get("notional"))
+    isolated_wallet = _safe_decimal_opt(pr.get("isolatedWallet"))
+    symbol_unrealized = _safe_decimal_opt(pr.get("unRealizedProfit"))
+
     return {
         "ts": int(time.time() * 1000),
         "server_time": now.isoformat(),
@@ -525,6 +591,13 @@ async def build_dashboard_payload() -> dict[str, Any]:
         "position": {
             "side": side,
             "amt": float(abs(pos_amt)),
+            "paused": bool(paused),
+            "pause_reason": pause_reason,
+            "leverage": leverage_now,
+            "margin_type": margin_type,
+            "notional": float(abs(position_notional)) if position_notional is not None else None,
+            "isolated_wallet": float(isolated_wallet) if isolated_wallet is not None else None,
+            "symbol_unrealized": float(symbol_unrealized) if symbol_unrealized is not None else None,
             "entry_price": float(entry_price) if entry_price is not None else None,
             "liq_price": float(d(pr["liquidationPrice"])) if "liquidationPrice" in pr else None,
             "stop": {
@@ -532,6 +605,27 @@ async def build_dashboard_payload() -> dict[str, Any]:
                 "mode": stop_mode,
                 "stop_price": float(stop_price) if stop_price is not None else None,
             },
+        },
+        "market": {
+            "mark_price": float(mark_price) if mark_price is not None else None,
+            "index_price": float(index_price) if index_price is not None else None,
+            "estimated_settle_price": float(estimated_settle_price) if estimated_settle_price is not None else None,
+            "funding_rate": float(funding_rate) if funding_rate is not None else None,
+            "funding_rate_pct": float(funding_rate * Decimal("100")) if funding_rate is not None else None,
+            "next_funding_time_ms": next_funding_ms,
+            "next_funding_countdown_s": next_funding_countdown_s,
+            "change_24h_pct": float(change_24h_pct) if change_24h_pct is not None else None,
+            "high_24h": float(high_24h) if high_24h is not None else None,
+            "low_24h": float(low_24h) if low_24h is not None else None,
+            "volume_24h": float(volume_24h) if volume_24h is not None else None,
+            "quote_volume_24h": float(quote_volume_24h) if quote_volume_24h is not None else None,
+            "weighted_avg_price_24h": float(weighted_avg_price_24h) if weighted_avg_price_24h is not None else None,
+            "open_interest": float(open_interest) if open_interest is not None else None,
+            "open_interest_usdt": float(open_interest_usdt) if open_interest_usdt is not None else None,
+            "price_basis": float(price_basis) if price_basis is not None else None,
+            "spread_bps": float(spread_bps) if spread_bps is not None else None,
+            "contract_type": str(symbol_meta.get("contractType", "")).upper() if symbol_meta else None,
+            "symbol_status": str(symbol_meta.get("status", "")).upper() if symbol_meta else None,
         },
         "vps": {
             "cpu_pct": float(cpu),
@@ -573,6 +667,90 @@ def _fetch_prices_sync() -> dict[str, Decimal]:
     return out
 
 
+def _fetch_market_stats_sync() -> dict[str, dict[str, Any]]:
+    """
+    Pull Binance futures market fields commonly shown on exchange UIs:
+    mark/index price, funding, 24h stats, and open interest.
+    """
+    assert ctx is not None
+    out: dict[str, dict[str, Any]] = {}
+
+    for sym in ctx.symbols:
+        snap: dict[str, Any] = {}
+
+        try:
+            mp = ctx.service.rest.mark_price(symbol=sym)
+            if isinstance(mp, dict):
+                mark_price = _safe_decimal_opt(mp.get("markPrice"))
+                index_price = _safe_decimal_opt(mp.get("indexPrice"))
+                funding_rate = _safe_decimal_opt(mp.get("lastFundingRate"))
+                settle_price = _safe_decimal_opt(mp.get("estimatedSettlePrice"))
+                next_funding = mp.get("nextFundingTime")
+                ts = mp.get("time")
+
+                if mark_price is not None:
+                    snap["mark_price"] = mark_price
+                if index_price is not None:
+                    snap["index_price"] = index_price
+                if funding_rate is not None:
+                    snap["funding_rate"] = funding_rate
+                if settle_price is not None:
+                    snap["estimated_settle_price"] = settle_price
+                if next_funding is not None:
+                    snap["next_funding_time_ms"] = int(next_funding)
+                if ts is not None:
+                    snap["mark_time_ms"] = int(ts)
+        except Exception:
+            pass
+
+        try:
+            t24 = ctx.service.rest.ticker_24hr_price_change(symbol=sym)
+            if isinstance(t24, dict):
+                pct = _safe_decimal_opt(t24.get("priceChangePercent"))
+                high = _safe_decimal_opt(t24.get("highPrice"))
+                low = _safe_decimal_opt(t24.get("lowPrice"))
+                vol = _safe_decimal_opt(t24.get("volume"))
+                qvol = _safe_decimal_opt(t24.get("quoteVolume"))
+                wavg = _safe_decimal_opt(t24.get("weightedAvgPrice"))
+                open_time = t24.get("openTime")
+                close_time = t24.get("closeTime")
+
+                if pct is not None:
+                    snap["change_24h_pct"] = pct
+                if high is not None:
+                    snap["high_24h"] = high
+                if low is not None:
+                    snap["low_24h"] = low
+                if vol is not None:
+                    snap["volume_24h"] = vol
+                if qvol is not None:
+                    snap["quote_volume_24h"] = qvol
+                if wavg is not None:
+                    snap["weighted_avg_price_24h"] = wavg
+                if open_time is not None:
+                    snap["open_time_ms_24h"] = int(open_time)
+                if close_time is not None:
+                    snap["close_time_ms_24h"] = int(close_time)
+        except Exception:
+            pass
+
+        try:
+            oi = ctx.service.rest.open_interest(symbol=sym)
+            if isinstance(oi, dict):
+                open_interest = _safe_decimal_opt(oi.get("openInterest"))
+                oi_ts = oi.get("time")
+                if open_interest is not None:
+                    snap["open_interest"] = open_interest
+                if oi_ts is not None:
+                    snap["open_interest_time_ms"] = int(oi_ts)
+        except Exception:
+            pass
+
+        out[sym] = snap
+
+    return out
+
+
 def _fetch_latency_sync() -> int:
     assert ctx is not None
     t0 = time.perf_counter()
@@ -585,6 +763,7 @@ async def metrics_poller():
     last_prices = 0.0
     last_account = 0.0
     last_risk = 0.0
+    last_market = 0.0
     last_latency = 0.0
     while not ctx.shutdown_thread.is_set():
         now = time.time()
@@ -614,6 +793,9 @@ async def metrics_poller():
         if now - last_risk >= 1.0:
             last_risk = now
             jobs.append(("risk", asyncio.to_thread(_fetch_position_risk_sync)))
+        if now - last_market >= 3.0:
+            last_market = now
+            jobs.append(("market", asyncio.to_thread(_fetch_market_stats_sync)))
         if now - last_latency >= 5.0:
             last_latency = now
             jobs.append(("latency", asyncio.to_thread(_fetch_latency_sync)))
@@ -634,6 +816,8 @@ async def metrics_poller():
                         ctx.cache.margin_balance = res["margin_bal"]
                     elif name == "risk":
                         ctx.cache.position_risk = res
+                    elif name == "market":
+                        ctx.cache.market_stats = res
                     elif name == "latency":
                         ctx.cache.api_latency_ms = int(res)
 
@@ -902,8 +1086,7 @@ async def switch_active_symbols(
     log.info("Switched active symbols to %s (primary=%s) reason=%s", ",".join(ctx.symbols), prim, reason)
 
 
-@app.on_event("startup")
-async def on_startup():
+async def _startup_app() -> None:
     global ctx
     cfg_path = os.environ.get("SAR_CONFIG", "config.json")
     cfg = Config.load(cfg_path)
@@ -961,8 +1144,7 @@ async def on_startup():
     log.info("Startup complete (symbols=%s)", ",".join(ctx.symbols))
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
+async def _shutdown_app() -> None:
     global ctx
     if ctx is None:
         return
@@ -970,6 +1152,18 @@ async def on_shutdown():
     if ctx.shutdown_bot is not None:
         ctx.shutdown_bot.set()
     ctx = None
+
+
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    await _startup_app()
+    try:
+        yield
+    finally:
+        await _shutdown_app()
+
+
+app.router.lifespan_context = app_lifespan
 
 
 __all__ = ["app"]

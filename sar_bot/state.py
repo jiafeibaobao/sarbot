@@ -27,6 +27,7 @@ class SymbolState:
     last_flip_ts: float | None = None
 
     paused: bool = False
+    pause_reason: str | None = None
     pending_reentry_side: Side | None = None
     pending_reentry_qty: Decimal | None = None
 
@@ -89,6 +90,8 @@ class StateStore:
         with self._lock:
             self._symbols[symbol].position_amt = amt
 
-    def set_paused(self, symbol: str, paused: bool) -> None:
+    def set_paused(self, symbol: str, paused: bool, reason: str | None = None) -> None:
         with self._lock:
-            self._symbols[symbol].paused = paused
+            st = self._symbols[symbol]
+            st.paused = paused
+            st.pause_reason = reason if paused else None

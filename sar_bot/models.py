@@ -45,4 +45,4 @@ class SymbolFilters:
     tick_size: Decimal
     step_size: Decimal
     min_qty: Decimal
-
+    max_qty: Decimal | None = None

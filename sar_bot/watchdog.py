@@ -53,7 +53,14 @@ class Watchdog(threading.Thread):
             self._shutdown.wait(timeout=sleep_s)
 
     def _tick(self) -> None:
-        risks = self._svc.get_position_risk()
+        try:
+            risks = self._svc.get_position_risk()
+        except (ClientError, ServerError) as e:
+            self._log.warning("watchdog get_position_risk failed: %s", getattr(e, "error_message", e))
+            return
+        except Exception as e:
+            self._log.warning("watchdog get_position_risk unexpected error: %s", e)
+            return
         risk_map: dict[str, Decimal] = {}
         for r in risks:
             sym = str(r.get("symbol", "")).upper()
@@ -86,6 +93,9 @@ class Watchdog(threading.Thread):
                 open_orders = self._svc.get_open_orders(sym)
             except (ClientError, ServerError) as e:
                 self._log.warning("get_open_orders failed for %s: %s", sym, getattr(e, "error_message", e))
+                continue
+            except Exception as e:
+                self._log.warning("get_open_orders unexpected error for %s: %s", sym, e)
                 continue
 
             has_bot_stop = False

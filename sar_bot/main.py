@@ -42,6 +42,7 @@ def parse_filters(exchange_info: dict, symbols: list[str]) -> dict[str, SymbolFi
         tick_size = None
         step_size = None
         min_qty = None
+        max_qty = None
         if isinstance(filters, list):
             for f in filters:
                 if not isinstance(f, dict):
@@ -52,17 +53,28 @@ def parse_filters(exchange_info: dict, symbols: list[str]) -> dict[str, SymbolFi
                 elif ft == "LOT_SIZE":
                     step_size = d(f.get("stepSize", "0"))
                     min_qty = d(f.get("minQty", "0"))
+                    mx = d(f.get("maxQty", "0"))
+                    if mx > 0:
+                        max_qty = mx if max_qty is None else min(max_qty, mx)
                 elif ft == "MARKET_LOT_SIZE":
                     # For safety, enforce at least market minQty/stepSize if larger.
                     ms = d(f.get("stepSize", "0"))
                     mq = d(f.get("minQty", "0"))
+                    mx = d(f.get("maxQty", "0"))
                     if step_size is None or ms > step_size:
                         step_size = ms
                     if min_qty is None or mq > min_qty:
                         min_qty = mq
+                    if mx > 0:
+                        max_qty = mx if max_qty is None else min(max_qty, mx)
         if not tick_size or not step_size or min_qty is None:
             continue
-        out[sym] = SymbolFilters(tick_size=tick_size, step_size=step_size, min_qty=min_qty)
+        out[sym] = SymbolFilters(
+            tick_size=tick_size,
+            step_size=step_size,
+            min_qty=min_qty,
+            max_qty=max_qty,
+        )
     return out
 
 
@@ -131,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         if dual and not cfg.support_hedge_mode:
             log.error("Account is in Hedge Mode (dualSidePosition=true); support_hedge_mode=false -> pause all symbols")
             for sym in symbols:
-                state.set_paused(sym, True)
+                state.set_paused(sym, True, reason="hedge_mode_not_supported")
     except Exception as e:
         log.warning("get_position_mode failed: %s", e)
 
