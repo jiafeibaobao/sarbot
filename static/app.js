@@ -3,6 +3,8 @@ const chartCanvas=document.getElementById('mainChart');
 const chartCtx=chartCanvas?chartCanvas.getContext('2d'):null;
 const jsStatusEl=document.getElementById('js-status');
 function setJsStatus(msg){if(jsStatusEl)jsStatusEl.textContent=msg}
+window.__SAR_APP_BOOTED=true;
+window.__SAR_APP_ACTIVE=false;
 setJsStatus('JS: running');
 const CHART_POINTS=120;
 const priceData=Array(CHART_POINTS).fill(null),smaData=Array(CHART_POINTS).fill(null),labels=Array(CHART_POINTS).fill('');
@@ -66,5 +68,6 @@ function formatPnL(el,v,id){if(v==null){el.innerText='--';el.className='v';retur
 function formatUptime(s){s=Math.max(0,Number(s)||0);return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`}
 function log(msg,type='info'){const b=$('sys-log'),d=document.createElement('div');let c='text-light';if(type==='success')c='text-success';if(type==='error')c='text-danger';if(type==='warn')c='text-warning';if(type==='info')c='text-info';d.innerHTML=`<span class="log-time">${new Date().toLocaleTimeString()}</span><span class="${c}">${msg}</span>`;b.insertBefore(d,b.firstChild);while(b.children.length>240)b.removeChild(b.lastChild)}
 function clearLogs(){$('sys-log').innerHTML=''}
-setJsStatus('JS: init');refreshChart(true);reloadSettings();startFallbackPolling();connectWs();setJsStatus('JS: ready');
+window.applyData=applyData;
+setJsStatus('JS: init');refreshChart(true);reloadSettings();startFallbackPolling();connectWs();window.__SAR_APP_ACTIVE=true;setJsStatus('JS: ready');
 

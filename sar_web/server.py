@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from sar_web.settings_store import SettingsStore
 
 
 log = logging.getLogger("sar_web")
+SYMBOL_RE = re.compile(r"^[A-Z0-9]+USDT$")
 
 
 def setup_logging(level: str) -> None:
@@ -207,6 +209,11 @@ def _safe_decimal_opt(val: Any) -> Decimal | None:
         return None
 
 
+def _is_ui_symbol(sym: str) -> bool:
+    s = str(sym or "").upper()
+    return bool(s) and s.isascii() and bool(SYMBOL_RE.fullmatch(s))
+
+
 async def get_24hr_tickers_cached(max_age_s: float = 10.0) -> list[dict[str, Any]]:
     """
     Cache /fapi/v1/ticker/24hr in-memory to avoid hitting REST on every UI click.
@@ -318,6 +325,8 @@ async def api_update_settings(payload: dict[str, Any]):
     primary_u: str | None = None
     if primary:
         primary_u = str(primary).upper()
+        if not _is_ui_symbol(primary_u):
+            raise HTTPException(status_code=400, detail=f"Invalid symbol: {primary_u}")
         ctx.settings.ensure_symbol(primary_u)
         ctx.settings.set_primary_symbol(primary_u)
 
@@ -327,6 +336,8 @@ async def api_update_settings(payload: dict[str, Any]):
             if not isinstance(sdata, dict):
                 continue
             sym_u = str(sym).upper()
+            if not _is_ui_symbol(sym_u):
+                continue
             ctx.settings.ensure_symbol(sym_u)
             before = ctx.settings.get_symbol_config(sym_u)
             after = ctx.settings.update_symbol(
@@ -395,6 +406,8 @@ async def api_rankings(
     for t in tickers:
         sym = str(t.get("symbol", "")).upper()
         if not sym:
+            continue
+        if not _is_ui_symbol(sym):
             continue
         if allowed is not None and sym not in allowed:
             continue
@@ -1017,6 +1030,9 @@ async def switch_active_symbols(
     syms = [str(s).upper() for s in symbols if str(s).strip()]
     if not syms:
         raise ValueError("symbols must be non-empty")
+    bad = [s for s in syms if not _is_ui_symbol(s)]
+    if bad:
+        raise ValueError(f"Invalid symbols: {','.join(bad)}")
     # keep order but remove duplicates
     seen = set()
     syms = [s for s in syms if not (s in seen or seen.add(s))]
@@ -1136,6 +1152,8 @@ async def _startup_app() -> None:
         best_pct: Decimal | None = None
         for t in tickers:
             sym = str(t.get("symbol", "")).upper()
+            if not _is_ui_symbol(sym):
+                continue
             meta = exch.get(sym)
             if not meta:
                 continue

@@ -38,7 +38,7 @@
       <div class="logo"><i class="fas fa-rocket"></i></div>
       <div>
         <div style="font-weight:700;font-size:1.3rem">SAR QUANT PRO <span class="badge text-bg-primary" style="font-size:.58em">LIVE</span></div>
-        <div class="sub">策略引擎 v3.2.1 | API延迟 <span id="api-latency">--</span> | <span id="js-status">JS: booting</span> | build <span id="build-tag">fc185c4</span></div>
+        <div class="sub">策略引擎 v3.2.1 | API延迟 <span id="api-latency">--</span> | <span id="js-status">JS: booting</span> | build <span id="build-tag">b6-hotfix</span></div>
       </div>
     </div>
     <div style="display:grid;gap:6px;justify-items:center">
@@ -136,7 +136,51 @@
   </section>
 </div>
 
-<script src="/static/app.js?v=1"></script>
+<script src="/static/app.js?v=2"></script>
+<script>
+(function(){
+  const statusEl=document.getElementById('js-status');
+  const setText=(id,val)=>{const el=document.getElementById(id);if(el&&val!=null)el.textContent=String(val)};
+  const fmtNum=(v,d)=>{const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}):'--'};
+  const fmtPrice=(v)=>{const n=Number(v);if(!Number.isFinite(n))return'--';const a=Math.abs(n);const d=a<1?5:(a<100?4:(a<1000?3:2));return n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})};
+  const setTrend=(id,v)=>{const el=document.getElementById(id);if(!el)return;const n=Number(v);if(!Number.isFinite(n)){el.textContent='--';return}el.textContent=`${n>=0?'+':''}${n.toFixed(2)}`;el.className=`v ${n>=0?'trend-up':'trend-down'}`};
+  const setRunning=(running)=>{const btn=document.getElementById('bot-toggle');const txt=document.getElementById('bot-state-text');if(!btn||!txt)return;if(running){btn.className='btn-control active';txt.textContent='系统运行中'}else{btn.className='btn-control stopped';txt.textContent='已停止 / 不开新仓'}};
+  const renderBasic=(d)=>{
+    if(!d||typeof d!=='object')return;
+    if(d.symbol)setText('symbol-ticker',d.symbol);
+    if(d.api_latency_ms!=null)setText('api-latency',`${d.api_latency_ms}ms`);
+    setText('sys-clock',new Date().toLocaleTimeString());
+    if(typeof d.running==='boolean')setRunning(d.running);
+    if(d.account){if(d.account.equity!=null)setText('total-equity',fmtNum(d.account.equity,2));if(d.account.available!=null)setText('available-balance',fmtNum(d.account.available,2));if(d.account.used_ratio_pct!=null)setText('used-ratio',`${Number(d.account.used_ratio_pct).toFixed(1)}%`)}
+    if(d.pnl){setTrend('unrealized-pnl',d.pnl.unrealized);setTrend('daily-pnl',d.pnl.daily_realized);setTrend('total-pnl',d.pnl.total_realized);if(d.pnl.roe_pct!=null)setText('roe-val',`${Number(d.pnl.roe_pct).toFixed(2)}%`);if(d.pnl.yield_pct!=null)setText('yield-val',`${Number(d.pnl.yield_pct).toFixed(2)}%`)}
+    if(d.price!=null){setText('last-price',fmtPrice(d.price));setText('chart-last-price',fmtPrice(d.price))}
+    if(d.market){if(d.market.mark_price!=null)setText('mark-price',fmtPrice(d.market.mark_price));if(d.market.change_24h_pct!=null)setText('change-24h',`${Number(d.market.change_24h_pct).toFixed(2)}%`)}
+    if(statusEl&&window.__SAR_APP_ACTIVE!==true)statusEl.textContent='JS: fallback';
+  };
+  let busy=false;
+  async function tick(){
+    if(window.__SAR_APP_ACTIVE===true)return;
+    if(busy)return;
+    busy=true;
+    try{
+      const resp=await fetch('/api/dashboard',{cache:'no-store'});
+      if(!resp.ok)return;
+      const data=await resp.json();
+      if(typeof window.applyData==='function'){
+        try{window.applyData(data)}catch(_){renderBasic(data)}
+      }else{
+        renderBasic(data)
+      }
+    }catch(_){
+      if(statusEl&&window.__SAR_APP_ACTIVE!==true)statusEl.textContent='JS: fallback error';
+    }finally{
+      busy=false;
+    }
+  }
+  setTimeout(tick,300);
+  setInterval(tick,1000);
+})();
+</script>
 </body>
 </html>
 
