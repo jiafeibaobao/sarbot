@@ -14,6 +14,7 @@ from typing import Any
 
 import psutil
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -180,6 +181,13 @@ ctx: AppContext | None = None
 
 
 app = FastAPI(title="SAR Dashboard")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 static_dir = Path(__file__).resolve().parent.parent / "static"
 if static_dir.exists():
